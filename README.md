@@ -50,10 +50,50 @@ can turn that off in the popover).
 
 ## Activate the plugin
 
-> **TODO** — the activation flow (installing and loading `spaces-renamer.dylib` into
-> `WindowManager`/`Dock`, and restarting that process) is being built in
-> [issue #2](https://github.com/Quelaan1/spaces-renamer/issues/2). Until it lands this section is
-> a placeholder, and the Diagnostics pane shows the same placeholder in its "plugin active" row.
+Activation loads `spaces-renamer.dylib` into the Spaces-bar host (`WindowManager` on macOS 27,
+`Dock` on macOS 26) and restarts it. There are two injectors; both need SIP disabled and the
+arm64e preview ABI (above). Pick one in the app's **Diagnostics ▸ Activation** section, or drive
+the same mechanism from Terminal with the embedded `injector.sh`.
+
+### DYLD (default, no root)
+
+A per-user LaunchAgent publishes `DYLD_INSERT_LIBRARIES` and restarts the host, so the plugin
+reloads at every login. No password, nothing written outside your home folder, and it is what the
+app uses by default. The variable is global, so the library is loaded into every app you launch
+afterwards — but its constructor immediately returns in anything that is not the host, so this is
+harmless. Removing it is one click (or `injector.sh dyld off`) plus a host restart.
+
+In the app: open the menu-bar popover, **Diagnostics**, choose **DYLD_INSERT_LIBRARIES**, click
+**Activate**. From a checkout:
+
+```sh
+make                                            # builds the app with the injector embedded
+SpacesRenamer/build/SpacesRenamer.app/Contents/Resources/injector.sh \
+  dyld on SpacesRenamer/build/SpacesRenamer.app/Contents/PlugIns/spaces-renamer.dylib
+```
+
+### MIP (survives reboot with no login agent)
+
+[MIP](https://github.com/LIJI32/MIP) is a system-wide injection platform. It loads the plugin
+only into the executables named in the bundle's `Info.plist` (`WindowManager`, `Dock`) and needs
+no login agent, but it requires a one-time privileged install and an admin password to drop the
+bundle in place. MIP is upstream-tested only up to macOS Sonoma; on macOS 26/27 it works with the
+arm64e preview ABI but is unsupported by its author, and a bad injector can require a
+[Recovery-boot fix](https://github.com/LIJI32/MIP#disclaimer) (`rm /Library/LaunchDaemons/local.lsdinjector.plist`).
+
+1. Install MIP once, following its README: disable SIP, `sudo nvram boot-args=-arm64e_preview_abi`,
+   then `make SIGN_IDENTITY=<identity> && sudo make install` in the MIP checkout. It installs to
+   `/Library/Apple/System/Library/Frameworks/mip` with a boot LaunchDaemon.
+2. Drop our bundle in. In the app: **Diagnostics ▸ Activation ▸ MIP ▸ Activate** (admin prompt).
+   From a checkout: `make install-mip` (copies `build/SpacesRenamer.mip.bundle` into MIP's
+   `Bundles/` as root and restarts the host). Remove it with `make uninstall-mip` or
+   **Deactivate**.
+
+The Diagnostics pane detects whether MIP is installed and whether our bundle is present, and
+greys out MIP activation until MIP is there.
+
+> The archived [ammonia](https://github.com/CthulhuGraphics/Ammonia) loader (and its forks) is a
+> possible alternative injector but is unmaintained and untested here; it is not supported.
 
 ## Use the app
 
@@ -108,9 +148,10 @@ Only the Command Line Tools are needed (Xcode is not used):
 
 ```sh
 xcode-select --install          # once
-make                            # SpacesRenamer/build/SpacesRenamer.app + spaces-renamer/build/spaces-renamer.dylib
+make                            # app with plugin, injector.sh and the MIP bundle embedded
 make test                       # plugin hook test against synthetic Dock and WindowManager layer trees
-make dmg                        # build/SpacesRenamer-<version>.dmg with the plugin embedded
+make dmg                        # build/SpacesRenamer-<version>.dmg from the embedded app
+make install-mip                # drop build/SpacesRenamer.mip.bundle into MIP's Bundles dir (root)
 make -C SpacesRenamer run       # launch the app
 ```
 
@@ -135,17 +176,20 @@ tracing into the unified log, readable with
 
 ## Uninstall
 
-1. Quit SpacesRenamer, turn off "Launch at login" first if you want the login item gone
+1. Deactivate the injector: in the app, **Diagnostics ▸ Activation ▸ Deactivate**, or from a
+   checkout `injector.sh dyld off` (DYLD) / `make uninstall-mip` (MIP). This removes the LaunchAgent
+   or MIP bundle and restarts the host clean.
+2. Quit SpacesRenamer, turn off "Launch at login" first if you want the login item gone
    immediately (deleting the app also removes it).
-2. Drag `SpacesRenamer.app` to the Trash (or `brew uninstall --cask spaces-renamer`).
-3. Optionally remove the published names:
+3. Drag `SpacesRenamer.app` to the Trash (or `brew uninstall --cask spaces-renamer`).
+4. Optionally remove the published names:
    ```sh
    defaults delete com.apple.dock SpacesRenamerNames
    defaults delete com.apple.dock SpacesRenamerMonitors
    defaults delete com.apple.WindowManager SpacesRenamerPlugin
    ```
-4. Restart the host so the plugin unloads: `killall WindowManager` (macOS 27) or `killall Dock`
-   (macOS 26).
+5. If anything still shows, restart the host so the plugin unloads: `killall WindowManager`
+   (macOS 27) or `killall Dock` (macOS 26).
 
 ---
 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>SpacesRenamer</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.alexbeals.SpacesRenamer.mip</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>SpacesRenamer</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__BUILD__</string>
+
+	<!-- MIP injection filter (LIJI32/MIP). MIP loads this bundle's executable into every
+	     process whose executable basename is listed here, and no others. The Spaces bar is
+	     drawn by WindowManager on macOS 27+ and by Dock on macOS 26, so both are listed; the
+	     dylib's own constructor is additionally gated on the host's bundle identifier, so a
+	     load into anything else is a no-op. See https://github.com/LIJI32/MIP#injection-filters. -->
+	<key>MIPExecutableNames</key>
+	<array>
+		<string>WindowManager</string>
+		<string>Dock</string>
+	</array>
+	<!-- The tweak does not support the (removed) Objective-C garbage collector. -->
+	<key>MIPSupportsGC</key>
+	<false/>
+</dict>
+</plist>

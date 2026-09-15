@@ -10,6 +10,7 @@ typealias ViewState = SwiftUICore.State
 struct SpacesRenamerApp: App {
   @ViewState private var store = SpacesStore()
   @ViewState private var diagnostics = DiagnosticsModel()
+  @ViewState private var activation = ActivationModel()
 
   init() {
     LoginItem.registerOnFirstLaunch()
@@ -17,7 +18,7 @@ struct SpacesRenamerApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      PopoverContent(store: store, diagnostics: diagnostics)
+      PopoverContent(store: store, diagnostics: diagnostics, activation: activation)
     } label: {
       Image(nsImage: Self.statusIcon)
     }
@@ -39,6 +40,7 @@ private struct PopoverContent: View {
 
   let store: SpacesStore
   let diagnostics: DiagnosticsModel
+  let activation: ActivationModel
 
   @ViewState private var pane = Pane.spaces
   @Environment(\.dismiss) private var dismiss
@@ -56,7 +58,7 @@ private struct PopoverContent: View {
       case .spaces:
         RenameView(store: store)
       case .diagnostics:
-        DiagnosticsView(model: diagnostics)
+        DiagnosticsView(model: diagnostics, activation: activation)
       }
     }
     .padding()

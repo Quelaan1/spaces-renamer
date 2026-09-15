@@ -19,7 +19,7 @@ struct DiagnosticCheck: Identifiable {
 @MainActor
 @Observable
 final class DiagnosticsModel {
-  nonisolated static let activationTODO = "TODO: plugin activation steps (tracked separately in issue #2)"
+  nonisolated static let activationRemedy = "Turn on an injector in the Activation section below, then re-run checks."
 
   private(set) var checks: [DiagnosticCheck] = [
     DiagnosticCheck(title: "System Integrity Protection"),
@@ -86,7 +86,7 @@ final class DiagnosticsModel {
     guard let marker else {
       check.status = .fail
       check.finding = "not loaded"
-      check.remedy = activationTODO
+      check.remedy = activationRemedy
       return check
     }
     check.status = .pass
@@ -99,7 +99,7 @@ final class DiagnosticsModel {
     guard let marker else {
       check.status = .fail
       check.finding = "not loaded"
-      check.remedy = activationTODO
+      check.remedy = activationRemedy
       return check
     }
     if marker.isLive {
@@ -108,7 +108,7 @@ final class DiagnosticsModel {
     } else {
       check.status = .fail
       check.finding = "stale: loaded into \(marker.hostName) pid \(marker.hostPID) (\(marker.hostBundleID)), which is no longer running"
-      check.remedy = activationTODO
+      check.remedy = activationRemedy
     }
     return check
   }
