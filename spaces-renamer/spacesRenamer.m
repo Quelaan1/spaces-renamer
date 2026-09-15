@@ -11,6 +11,27 @@
 #import "ZKSwizzle.h"
 #import <QuartzCore/QuartzCore.h>
 #import <Cocoa/Cocoa.h>
+#import <unistd.h>
+#import <os/log.h>
+
+// `make DEBUG=1` compiles verbose tracing of the layer tree into the unified log:
+//   log stream --predicate 'subsystem == "com.alexbeals.spaces-renamer"'
+#ifdef SR_DEBUG
+#define SRLog(fmt, ...) os_log(os_log_create("com.alexbeals.spaces-renamer", "hook"), fmt, ##__VA_ARGS__)
+#else
+#define SRLog(fmt, ...) do {} while (0)
+#endif
+
+#ifndef SPACES_RENAMER_VERSION
+#define SPACES_RENAMER_VERSION "0.0.0-dev"
+#endif
+#ifndef SPACES_RENAMER_BUILD
+#define SPACES_RENAMER_BUILD "unknown"
+#endif
+
+// Visible with `strings` so a dylib on disk can always be identified.
+__attribute__((used)) static const char kSpacesRenamerVersionTag[] =
+    "spaces-renamer " SPACES_RENAMER_VERSION " (" SPACES_RENAMER_BUILD ")";
 
 static char OVERRIDDEN_STRING;
 static char OVERRIDDEN_WIDTH;
@@ -18,9 +39,83 @@ static char OFFSET;
 static char NEW_X;
 static char TYPE;
 
-#define customNamesPlist [@"~/Library/Containers/com.alexbeals.spacesrenamer/com.alexbeals.spacesrenamer.plist" stringByExpandingTildeInPath]
-#define listOfSpacesPlist [@"~/Library/Containers/com.alexbeals.spacesrenamer/com.alexbeals.spacesrenamer.currentspaces.plist" stringByExpandingTildeInPath]
-#define spacesPath [@"~/Library/Preferences/com.apple.spaces.plist" stringByExpandingTildeInPath]
+// Data channel between the app and the plugin: preference domains, not files.
+//
+// WindowManager (which draws the Spaces bar from macOS 27) runs under
+// /System/Library/Sandbox/Profiles/com.apple.WindowManager.sb: `(deny default)`, no file reads
+// under ~/Library, but `user-preference-read` for the `com.apple.dock` domain and
+// `user-preference-write` for its own `com.apple.WindowManager` domain. Dock is unsandboxed.
+// So:
+//   - the app publishes names and the current layout as keys of the `com.apple.dock` domain,
+//     which every host can read;
+//   - the plugin publishes its status marker in the host's own domain, which the host can
+//     write and the app can read.
+// The hook test redirects both to a throwaway domain through SPACES_RENAMER_DOMAIN; no host
+// process ever sets that variable.
+static NSString *const kNamesDomain = @"com.apple.dock";
+static NSString *const kNamesKey = @"SpacesRenamerNames";       // { space uuid : name }
+static NSString *const kMonitorsKey = @"SpacesRenamerMonitors"; // CGSCopyManagedDisplaySpaces array
+static NSString *const kStatusKey = @"SpacesRenamerPlugin";     // status marker dictionary
+
+static NSString *testDomain(void) {
+  const char *override = getenv("SPACES_RENAMER_DOMAIN");
+  return (override && *override) ? [NSString stringWithUTF8String:override] : nil;
+}
+
+static NSString *namesDomain(void) {
+  return testDomain() ?: kNamesDomain;
+}
+
+static NSString *statusDomain(void) {
+  return testDomain() ?: [NSBundle mainBundle].bundleIdentifier;
+}
+
+static id readPreference(NSString *key, NSString *domain) {
+  CFPropertyListRef value = CFPreferencesCopyAppValue((CFStringRef)key, (CFStringRef)domain);
+  return value ? [(id)value autorelease] : nil;
+}
+
+// Status marker read by the app's diagnostics pane. Written once when the dylib loads into
+// the host and once more when the Spaces bar hook first fires, so the app can tell
+// "installed but never injected" from "injected but the layer tree changed again".
+static void writePluginStatus(BOOL hookFired) {
+  @autoreleasepool {
+    NSMutableDictionary *status = [NSMutableDictionary dictionary];
+    if (hookFired) {
+      id previous = readPreference(kStatusKey, statusDomain());
+      if ([previous isKindOfClass:[NSDictionary class]]) {
+        [status addEntriesFromDictionary:previous];
+      }
+      status[@"FirstHookAt"] = [NSDate date];
+    } else {
+      status[@"Version"] = @SPACES_RENAMER_VERSION;
+      status[@"Build"] = @SPACES_RENAMER_BUILD;
+      status[@"HostPID"] = @(getpid());
+      status[@"HostBundleID"] = [NSBundle mainBundle].bundleIdentifier ?: @"";
+      status[@"LoadedAt"] = [NSDate date];
+    }
+    CFPreferencesSetAppValue((CFStringRef)kStatusKey, (CFPropertyListRef)status, (CFStringRef)statusDomain());
+    CFPreferencesAppSynchronize((CFStringRef)statusDomain());
+  }
+}
+
+// The hooks are only installed inside the process that draws the Spaces bar: Dock up to
+// macOS 26, WindowManager from macOS 27. Injection mechanisms such as DYLD_INSERT_LIBRARIES
+// can land the dylib in unrelated processes, which must stay untouched (and must not overwrite
+// the status marker). The hook test opts in through the domain override.
+__attribute__((constructor)) static void spacesRenamerDidLoad(void) {
+  @autoreleasepool {
+    NSString *host = [NSBundle mainBundle].bundleIdentifier;
+    BOOL isHost = [host isEqualToString:@"com.apple.dock"] || [host isEqualToString:@"com.apple.WindowManager"];
+    if (!isHost && !testDomain()) {
+      return;
+    }
+    BOOL swizzled = ZKSwizzleGroup(SpacesRenamer);
+    SRLog("loaded into %{public}@ (pid %d), swizzled=%d", host, getpid(), swizzled);
+    (void)swizzled;
+    writePluginStatus(NO);
+  }
+}
 
 @interface Monitor : NSObject
 @property (nonatomic, strong) NSString *displayUUID;
@@ -41,23 +136,16 @@ static char TYPE;
 
 int monitorIndex = 0;
 
-// Recursively invokes setFrame on the modified children so that they don't change positions on
-// swiping between different spaces.  Called on the master parent ECMaterialLayer at the end of
-// the override calculations in setFrame.  Also forces redraws, which makes the resizing work.
-// This is a hack.
-static void refreshFrames(CALayer *frame) {
-  for (int i = 0; i < frame.sublayers.count; i++) {
-    [frame.sublayers[i] setFrame:frame.sublayers[i].frame];
-    refreshFrames(frame.sublayers[i]);
-  }
-}
-
-static void refreshFramesSur(CALayer *frame, CALayer* exception) {
+// Recursively re-applies setFrame on the modified children so that they don't change positions
+// on swiping between different spaces. Called on the SpacesListLayoutController root layer at
+// the end of the override calculations in setFrame (the root itself is skipped to avoid
+// recursion). Also forces redraws, which makes the resizing work. This is a hack.
+static void refreshFrames(CALayer *frame, CALayer *exception) {
   for (CALayer *layer in frame.sublayers) {
     if (![layer isEqualTo:exception]) {
       [layer setFrame:layer.frame];
     }
-    refreshFramesSur(layer, exception);
+    refreshFrames(layer, exception);
   }
 }
 
@@ -136,18 +224,37 @@ static void overrideTextLayer(CALayer *view, NSString *newString, double width, 
   }
 }
 
+// Resolves the CTFont the text layer renders with. CATextLayer.font may be a CTFontRef, a
+// CGFontRef, a font name, or nil; only a CTFontRef can be handed to CoreText for measuring.
+static CTFontRef copyMeasuringFont(CATextLayer *textLayer) {
+  CFTypeRef font = textLayer.font;
+  CGFloat size = textLayer.fontSize > 0 ? textLayer.fontSize : 12;
+  if (font && CFGetTypeID(font) == CTFontGetTypeID()) {
+    return (CTFontRef)CFRetain(font);
+  }
+  if (font && CFGetTypeID(font) == CFStringGetTypeID()) {
+    return CTFontCreateWithName((CFStringRef)font, size, NULL);
+  }
+  if (font && CFGetTypeID(font) == CGFontGetTypeID()) {
+    return CTFontCreateWithGraphicsFont((CGFontRef)font, size, NULL, NULL);
+  }
+  return CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, size, NULL);
+}
+
 // Gets the text area, and renders how large it would be with the new dimensions
 // Uses this for calculating how far they should be offset by
 static double getTextSizeHelper(CATextLayer *textLayer, NSString *string) {
   CFRange textRange = CFRangeMake(0, string.length);
   CFMutableAttributedStringRef attributedString = CFAttributedStringCreateMutable(kCFAllocatorDefault, string.length);
   CFAttributedStringReplaceString(attributedString, CFRangeMake(0, 0), (CFStringRef) string);
-  CFAttributedStringSetAttribute(attributedString, textRange, kCTFontAttributeName, ((CATextLayer *)textLayer).font);
+  CTFontRef font = copyMeasuringFont(textLayer);
+  CFAttributedStringSetAttribute(attributedString, textRange, kCTFontAttributeName, font);
   CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString(attributedString);
   CFRange fitRange;
   CGSize frameSize = CTFramesetterSuggestFrameSizeWithConstraints(framesetter, textRange, NULL, CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX), &fitRange);
   CFRelease(framesetter);
   CFRelease(attributedString);
+  CFRelease(font);
   return frameSize.width;
 }
 
@@ -172,42 +279,33 @@ static int getSelected(NSArray<CALayer *> *views) {
 }
 
 /*
- 1. Load the customNamesPlist for named spaces
- 2. Load the listOfSpacesPlist to get the current list of spaces
- 3. Crosslist and return the custom names for each plist, and whether it's selected
+ 1. Load the custom names published by the app
+ 2. Load the current list of spaces per display published by the app
+ 3. Crosslist and return the custom names for each display, and whether each space is selected
  */
-static NSMutableArray<Monitor *> *getNamesFromPlist() {
-  NSDictionary *dictOfNames = [NSDictionary dictionaryWithContentsOfFile:customNamesPlist];
-  if (!dictOfNames) {
+static NSMutableArray<Monitor *> *loadNamedMonitors() {
+  NSDictionary *dict = readPreference(kNamesKey, namesDomain());
+  NSArray *listOfMonitors = readPreference(kMonitorsKey, namesDomain());
+  if (![dict isKindOfClass:[NSDictionary class]] || ![listOfMonitors isKindOfClass:[NSArray class]]) {
+    SRLog("no names/monitors in domain %{public}@ (names=%{public}@ monitors=%{public}@)", namesDomain(), [dict class], [listOfMonitors class]);
     return [NSMutableArray arrayWithCapacity:0];
   }
-  NSDictionary *dict = [dictOfNames valueForKey:@"spaces_renaming"];
-  NSDictionary *spacesCustom = [NSDictionary dictionaryWithContentsOfFile:listOfSpacesPlist];
-  if (!spacesCustom) {
-    return [NSMutableArray arrayWithCapacity:0];
-  }
-  NSArray *listOfMonitors = [spacesCustom valueForKeyPath:@"Monitors"];
 
   NSMutableArray *newNames = [NSMutableArray arrayWithCapacity:listOfMonitors.count];
 
   for (int i = 0; i < listOfMonitors.count; i++) {
     NSArray *listOfSpaces = [listOfMonitors[i] valueForKeyPath:@"Spaces"];
     NSString *selected = [listOfMonitors[i] valueForKeyPath:@"Current Space.uuid"];
-    Monitor *monitor = [[Monitor alloc] init];
+    Monitor *monitor = [[[Monitor alloc] init] autorelease];
     monitor.displayUUID = [listOfMonitors[i] valueForKeyPath:@"Display Identifier"];
 
     NSMutableArray *spaceNames = [NSMutableArray arrayWithCapacity:listOfSpaces.count];
     for (int j = 0; j < listOfSpaces.count; j++) {
       NSString *uuid = listOfSpaces[j][@"uuid"];
-      id name = [dict objectForKey:uuid];
+      id name = uuid ? [dict objectForKey:uuid] : nil;
       NSMutableDictionary *screenDict = [NSMutableDictionary dictionary];
       screenDict[@"selected"] = @([uuid isEqualToString:selected]);
-      spaceNames[j] = screenDict;
-      if (name != nil) {
-        screenDict[@"name"] = name;
-      } else {
-        screenDict[@"name"] = @"";
-      }
+      screenDict[@"name"] = [name isKindOfClass:[NSString class]] ? name : @"";
       spaceNames[j] = screenDict;
     }
     monitor.spaces = spaceNames;
@@ -217,10 +315,194 @@ static NSMutableArray<Monitor *> *getNamesFromPlist() {
   return newNames;
 }
 
-ZKSwizzleInterface(_SRCALayer, CALayer, CALayer);
+// =====================================================================================
+// macOS 27+: Mission Control's Spaces bar is drawn by WindowManager, not Dock.
+//
+// Layer tree (per display):
+//   CALayer (root, CAContext bound to one display)
+//     CALayer "SpacesBar" (delegate WindowManagerAgent.SpacesBarLayerController)
+//       WindowManagerAgent.SpacesBarPreviewContainerLayer "SpacesBarPreviewContainerLayer" ×N
+//         CALayer
+//           WindowManagerAgent.TextLayer "PreviewLabel"   (CATextLayer, string "Desktop N")
+//       CALayer "SpacesBarAddSpaceButton", "Material", "Shadow", ...
+// The bar receives -setBounds: on every layout pass and -layoutSublayers once per show.
+// =====================================================================================
+
+static NSString *const kSpacesBarLayerName = @"SpacesBar";
+static NSString *const kSpacesBarContainerLayerName = @"SpacesBarPreviewContainerLayer";
+static NSString *const kSpacesBarLabelLayerName = @"PreviewLabel";
+
+// The display a layer is shown on: WindowManager binds each root layer to a CAContext whose
+// (private) displayId is the CGDirectDisplayID. Returns nil while the context is not attached.
+static NSString *displayUUIDForLayer(CALayer *layer) {
+  CALayer *root = layer;
+  while (root.superlayer) {
+    root = root.superlayer;
+  }
+  if (![root respondsToSelector:@selector(context)]) {
+    return nil;
+  }
+  id context = [root performSelector:@selector(context)];
+  NSNumber *displayID = nil;
+  @try {
+    displayID = [context valueForKey:@"displayId"];
+  } @catch (NSException *ignored) {
+    return nil;
+  }
+  if (![displayID isKindOfClass:[NSNumber class]] || displayID.unsignedIntValue == 0) {
+    return nil;
+  }
+  CFUUIDRef uuid = CGDisplayCreateUUIDFromDisplayID(displayID.unsignedIntValue);
+  if (!uuid) {
+    return nil;
+  }
+  NSString *string = (NSString *)CFUUIDCreateString(kCFAllocatorDefault, uuid);
+  CFRelease(uuid);
+  return [string autorelease];
+}
+
+// The names entry for a display. CGSCopyManagedDisplaySpaces reports the display either by
+// UUID or as "Main" (the main display); accept both spellings.
+static Monitor *monitorForDisplayUUID(NSArray<Monitor *> *names, NSString *displayUUID) {
+  if (!displayUUID) {
+    return nil;
+  }
+  NSString *mainUUID = nil;
+  CFUUIDRef main = CGDisplayCreateUUIDFromDisplayID(CGMainDisplayID());
+  if (main) {
+    mainUUID = [(NSString *)CFUUIDCreateString(kCFAllocatorDefault, main) autorelease];
+    CFRelease(main);
+  }
+  for (Monitor *monitor in names) {
+    if ([monitor.displayUUID isEqualToString:displayUUID]) {
+      return monitor;
+    }
+    if ([monitor.displayUUID isEqualToString:@"Main"] && [mainUUID isEqualToString:displayUUID]) {
+      return monitor;
+    }
+  }
+  return nil;
+}
+
+static NSString *const kSpacesBarLabelSelectionLayerName = @"SpacesBarPreviewLabelSelection";
+static const CGFloat kSpacesBarLabelPillPadding = 10;  // selection pill extends this far past the label
+static const CGFloat kSpacesBarLabelMargin = 10;       // keep the label inside the container
+
+// WindowManager sizes the label, its holder and the selection pill for its own "Desktop N"
+// string and centers the holder in the container; a custom name needs the same geometry
+// recomputed for its own width, capped at the container width.
+//
+//   container (190×129)
+//     CALayer holder {x, 105, w, 24}            centered: x = (190 - w) / 2
+//       CALayer "SpacesBarPreviewLabelSelection" {-10, 0, w + 20, 24}   (only when selected)
+//       TextLayer "PreviewLabel" {0, 4, w, 17}  truncationMode=end, alignment=center
+static void fitSpacesBarLabel(CATextLayer *label, CALayer *container) {
+  CALayer *holder = label.superlayer;
+  if (!holder || holder.superlayer != container) {
+    return;
+  }
+  CGFloat maxWidth = container.bounds.size.width - 2 * kSpacesBarLabelMargin;
+  CGFloat width = MIN(ceil([label preferredFrameSize].width), maxWidth);
+  if (width <= 0 || fabs(width - label.bounds.size.width) < 0.5) {
+    return;
+  }
+  CGRect holderFrame = holder.frame;
+  holderFrame.origin.x = floor((container.bounds.size.width - width) / 2);
+  holderFrame.size.width = width;
+  holder.frame = holderFrame;
+  CGRect labelFrame = label.frame;
+  labelFrame.origin.x = 0;
+  labelFrame.size.width = width;
+  label.frame = labelFrame;
+  for (CALayer *sibling in holder.sublayers) {
+    if ([sibling.name isEqualToString:kSpacesBarLabelSelectionLayerName]) {
+      CGRect pill = sibling.frame;
+      pill.origin.x = -kSpacesBarLabelPillPadding;
+      pill.size.width = width + 2 * kSpacesBarLabelPillPadding;
+      sibling.frame = pill;
+    }
+  }
+}
+
+static CATextLayer *findLabelLayer(CALayer *layer) {
+  if ([layer.name isEqualToString:kSpacesBarLabelLayerName] && [layer isKindOfClass:[CATextLayer class]]) {
+    return (CATextLayer *)layer;
+  }
+  for (CALayer *sublayer in layer.sublayers) {
+    CATextLayer *found = findLabelLayer(sublayer);
+    if (found) {
+      return found;
+    }
+  }
+  return nil;
+}
+
+// Applies the custom names for the bar's display to its per-space labels. Containers are
+// matched to spaces by their left-to-right position, which is the same order as the CGS
+// space list for that display.
+static void applySpacesBarNames(CALayer *bar) {
+  NSMutableArray<CALayer *> *containers = [NSMutableArray array];
+  for (CALayer *sublayer in bar.sublayers) {
+    if ([sublayer.name isEqualToString:kSpacesBarContainerLayerName]) {
+      [containers addObject:sublayer];
+    }
+  }
+  if (containers.count == 0) {
+    return;
+  }
+  NSArray<Monitor *> *names = loadNamedMonitors();
+  NSString *displayUUID = displayUUIDForLayer(bar);
+  SRLog("SpacesBar containers=%lu display=%{public}@ monitors=%lu", (unsigned long)containers.count, displayUUID, (unsigned long)names.count);
+  if (names.count == 0) {
+    return;
+  }
+  Monitor *monitor = monitorForDisplayUUID(names, displayUUID);
+  if (!monitor) {
+    // Single-display fallback: the only bar can only belong to the only display.
+    if (names.count == 1) {
+      monitor = names[0];
+    } else {
+      return;
+    }
+  }
+  if (monitor.spaces.count != containers.count) {
+    return;
+  }
+  [containers sortUsingComparator:^NSComparisonResult(CALayer *a, CALayer *b) {
+    CGFloat ax = a.frame.origin.x, bx = b.frame.origin.x;
+    return ax < bx ? NSOrderedAscending : (ax > bx ? NSOrderedDescending : NSOrderedSame);
+  }];
+
+  static BOOL hookReported = NO;
+  if (!hookReported) {
+    hookReported = YES;
+    writePluginStatus(YES);
+  }
+
+  for (NSUInteger i = 0; i < containers.count; i++) {
+    CATextLayer *label = findLabelLayer(containers[i]);
+    if (!label) {
+      continue;
+    }
+    NSString *name = monitor.spaces[i][@"name"];
+    if (name.length == 0) {
+      // Names are read fresh on every layout pass, so a cleared name must also clear the
+      // override; WindowManager keeps re-applying its own "Desktop N" on its own.
+      assign(label, &OVERRIDDEN_STRING, nil);
+      continue;
+    }
+    assign(label, &OVERRIDDEN_STRING, name);
+    if (![label.string isEqual:name]) {
+      label.string = name;
+    }
+    fitSpacesBarLabel(label, containers[i]);
+    SRLog("display %{public}@ space %lu -> %{public}@ (label frame %{public}@, container %{public}@)", monitor.displayUUID, (unsigned long)i, label.string, NSStringFromRect(label.frame), NSStringFromRect(containers[i].frame));
+  }
+}
+
+ZKSwizzleInterfaceGroup(_SRCALayer, CALayer, CALayer, SpacesRenamer);
 @implementation _SRCALayer
 - (void)setFrame:(CGRect)arg1 {
-  CGRect orig = arg1;
   id possibleWidth = objc_getAssociatedObject(self, &OVERRIDDEN_WIDTH);
   if (possibleWidth && [possibleWidth isKindOfClass:[NSNumber class]] && self.class == NSClassFromString(@"CALayer")) {
     arg1.size.width = [possibleWidth doubleValue] + 20;
@@ -252,27 +534,33 @@ ZKSwizzleInterface(_SRCALayer, CALayer, CALayer);
     }
   }
 
-  // Name is enough to determine that it's the SpacesBar, and it is also the root layer
-  if ([self.name isEqual:@"SpacesListLayoutController"]) {
-    //    os_log(OS_LOG_DEFAULT, "%{public}@", self.description);
-    NSOperatingSystemVersion macOS = NSProcessInfo.processInfo.operatingSystemVersion;
-    bool bigSurOrNewer = (macOS.majorVersion >= 11 || macOS.minorVersion >= 16);
 
+  // Name is enough to determine that it's the SpacesBar, and it is also the root layer.
+  // Its first sublayer holds the compressed (unexpanded) spaces, the second the expanded ones.
+  if ([self.name isEqual:@"SpacesListLayoutController"] && self.sublayers.count >= 2) {
     NSArray<CALayer *> *unexpandedViews = self.sublayers[0].sublayers;
     NSArray<CALayer *> *expandedViews = self.sublayers[1].sublayers;
 
-    // Wait for ECTextLayers to be initialized
-    if (!(expandedViews || unexpandedViews)) {
+    // Wait for the per-space layers (and their ECTextLayers) to be initialized
+    if (!(expandedViews.count || unexpandedViews.count)) {
       ZKOrig(void, arg1);
       return;
     }
-    int numMonitors = MAX((int)unexpandedViews.count, (int)expandedViews.count);
+    int numSpaces = MAX((int)unexpandedViews.count, (int)expandedViews.count);
 
-    // Get which of the spaces in the current dock is selected
-    int selected = getSelected((!unexpandedViews || !unexpandedViews.count) ? expandedViews : unexpandedViews);
+    // Get which of the spaces in the current bar is selected (-1 while nothing is highlighted)
+    int selected = getSelected(unexpandedViews.count ? unexpandedViews : expandedViews);
+
+    SRLog("SpacesListLayoutController setFrame %{public}@ delegate=%{public}@ super=%{public}@ unexpanded=%lu expanded=%lu selected=%d",
+          NSStringFromRect(arg1), self.delegate, self.superlayer, (unsigned long)unexpandedViews.count, (unsigned long)expandedViews.count, selected);
+    static BOOL hookReported = NO;
+    if (!hookReported) {
+      hookReported = YES;
+      writePluginStatus(YES);
+    }
 
     // Get all of the names
-    NSMutableArray<Monitor *> *names = getNamesFromPlist();
+    NSMutableArray<Monitor *> *names = loadNamedMonitors();
 
     if (names.count == 0) {
       ZKOrig(void, arg1);
@@ -283,7 +571,8 @@ ZKSwizzleInterface(_SRCALayer, CALayer, CALayer);
     NSMutableArray *possibleMonitors = [[NSMutableArray alloc] init];
     for (int i = 0; i < names.count; i++) {
       if (
-          names[i].spaces.count == numMonitors && // Same number of monitors
+          names[i].spaces.count == numSpaces && // Same number of spaces
+          selected >= 0 && selected < names[i].spaces.count &&
           [names[i].spaces[selected][@"selected"] boolValue] // Same index is selected
           ) {
         [possibleMonitors addObject:[NSNumber numberWithInt:i]];
@@ -344,11 +633,7 @@ ZKSwizzleInterface(_SRCALayer, CALayer, CALayer);
     monitorIndex += 1;
 
     // So that it doesn't change sizes on switching spaces
-    if (!bigSurOrNewer) {
-      refreshFrames(self);
-    } else {
-      refreshFramesSur(self, self);
-    }
+    refreshFrames(self, self);
   }
 
   return ZKOrig(void, arg1);
@@ -384,9 +669,37 @@ ZKSwizzleInterface(_SRCALayer, CALayer, CALayer);
   CFStringRef uuid = CFUUIDCreateString(nil, screenUuid);
   return (__bridge NSString *)uuid;
 }
+
+// WindowManager (macOS 27+) lays the Spaces bar out through bounds, never frame.
+- (void)setBounds:(CGRect)bounds {
+  ZKOrig(void, bounds);
+  if ([self.name isEqualToString:kSpacesBarLayerName]) {
+    applySpacesBarNames(self);
+  }
+}
+
+- (void)layoutSublayers {
+  ZKOrig(void);
+  if ([self.name isEqualToString:kSpacesBarLayerName]) {
+    applySpacesBarNames(self);
+  }
+}
 @end
 
-ZKSwizzleInterface(_SRECTextLayer, ECTextLayer, CATextLayer);
+// Keeps a renamed WindowManager label renamed: WindowManager re-applies "Desktop N" to the
+// same CATextLayer on later layout passes, and the override must win each time.
+ZKSwizzleInterfaceGroup(_SRCATextLayer, CATextLayer, CATextLayer, SpacesRenamer);
+@implementation _SRCATextLayer
+- (void)setString:(id)string {
+  id overridden = objc_getAssociatedObject(self, &OVERRIDDEN_STRING);
+  if ([overridden isKindOfClass:[NSString class]] && [self.name isEqualToString:kSpacesBarLabelLayerName]) {
+    string = overridden;
+  }
+  ZKOrig(void, string);
+}
+@end
+
+ZKSwizzleInterfaceGroup(_SRECTextLayer, ECTextLayer, CATextLayer, SpacesRenamer);
 @implementation _SRECTextLayer
 - (void)setFrame:(CGRect)arg1 {
   //  os_log(OS_LOG_DEFAULT, "[ECTextLayer setFrame:] string=%{public}@", self.string);
@@ -403,6 +716,9 @@ ZKSwizzleInterface(_SRECTextLayer, ECTextLayer, CATextLayer);
   ZKOrig(void, arg1);
 }
 
+// ZKOrig forwards to the original -dealloc, which is what the missing-super warning asks for.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
 - (void)dealloc {
   @try {
     [self removeObserver:self forKeyPath:@"propertiesChanged" context:nil];
@@ -410,6 +726,7 @@ ZKSwizzleInterface(_SRECTextLayer, ECTextLayer, CATextLayer);
   }
   ZKOrig(void);
 }
+#pragma clang diagnostic pop
 
 - (void)observeValueForKeyPath:(NSString *)keyPath
                       ofObject:(id)object
