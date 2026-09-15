@@ -15,7 +15,7 @@ struct DiagnosticCheck: Identifiable {
   var id: String { title }
 }
 
-/// The four environment checks the Dock plugin depends on. Checks run off the main thread.
+/// The four environment checks the Spaces-bar plugin depends on. Checks run off the main thread.
 @MainActor
 @Observable
 final class DiagnosticsModel {
@@ -25,7 +25,7 @@ final class DiagnosticsModel {
     DiagnosticCheck(title: "System Integrity Protection"),
     DiagnosticCheck(title: "Boot arguments"),
     DiagnosticCheck(title: "Plugin version"),
-    DiagnosticCheck(title: "Plugin active in Dock"),
+    DiagnosticCheck(title: "Plugin active in host"),
   ]
   private(set) var isRunning = false
 
@@ -96,25 +96,28 @@ final class DiagnosticsModel {
     return check
   }
 
+  /// The marker names the host the plugin loaded into: `com.apple.dock` on macOS 26,
+  /// `com.apple.WindowManager` on macOS 27+ (which draws the Spaces bar there).
   nonisolated private static func pluginActive(_ marker: NSDictionary?) -> DiagnosticCheck {
-    var check = DiagnosticCheck(title: "Plugin active in Dock")
-    let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first?.processIdentifier
-    guard let marker, let markerPID = marker["DockPID"] as? Int else {
+    var check = DiagnosticCheck(title: "Plugin active in host")
+    guard let marker, let markerPID = marker["HostPID"] as? Int, let bundleID = marker["HostBundleID"] as? String else {
       check.status = .fail
       check.finding = "not loaded"
       check.remedy = activationTODO
       return check
     }
-    guard let dockPID else {
-      check.finding = "Dock is not running"
+    let lastComponent = bundleID.split(separator: ".").last.map(String.init) ?? bundleID
+    let hostName = lastComponent.prefix(1).uppercased() + lastComponent.dropFirst()
+    guard let hostPID = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.processIdentifier else {
+      check.finding = "\(hostName) (\(bundleID)) is not running"
       return check
     }
-    if Int(dockPID) == markerPID {
+    if Int(hostPID) == markerPID {
       check.status = .pass
-      check.finding = "Loaded in Dock (pid \(dockPID))"
+      check.finding = "active in \(hostName) (pid \(hostPID), \(bundleID))"
     } else {
       check.status = .fail
-      check.finding = "Plugin was loaded in Dock pid \(markerPID); current Dock pid is \(dockPID)"
+      check.finding = "loaded into \(hostName) pid \(markerPID), but the current \(hostName) pid is \(hostPID) (\(bundleID))"
       check.remedy = activationTODO
     }
     return check
