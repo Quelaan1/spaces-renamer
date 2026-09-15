@@ -134,6 +134,20 @@ enum Injector {
     }
   }
 
+  /// Adds `-arm64e_preview_abi` to boot-args via an admin prompt (root writes NVRAM).
+  static func enableARM64e() throws {
+    guard let script = scriptURL else { throw InjectorError.notEmbedded }
+    try admin("/bin/sh \(shellQuote(script.path)) arm64e on")
+  }
+
+  /// User-space restart through System Events, so no extra privilege is needed.
+  static func restartMac() {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = ["-e", "tell application \"System Events\" to restart"]
+    try? process.run()
+  }
+
   // MARK: - Running the script
 
   /// Runs the embedded script unprivileged, returning combined stdout+stderr.

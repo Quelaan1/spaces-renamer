@@ -22,8 +22,20 @@ struct DiagnosticsView: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             }
+            if let action = check.action, check.status == .fail {
+              Button(action.buttonTitle) { model.perform(action) }
+                .controlSize(.small)
+                .padding(.top, 2)
+            }
           }
         }
+      }
+
+      if let note = model.actionNote {
+        Text(note)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .textSelection(.enabled)
       }
 
       Divider()

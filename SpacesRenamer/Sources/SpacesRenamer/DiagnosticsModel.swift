@@ -1,6 +1,21 @@
 import AppKit
 import Observation
 
+/// A one-tap fix offered next to a failing check.
+enum RemedyAction: Equatable {
+  /// Copy a Terminal command to the clipboard (used where macOS forbids automating the step).
+  case copyCommand(String)
+  /// Add `-arm64e_preview_abi` to boot-args (admin prompt), then offer to restart.
+  case enableARM64e
+
+  var buttonTitle: String {
+    switch self {
+    case .copyCommand: "Copy command"
+    case .enableARM64e: "Enable & restart…"
+    }
+  }
+}
+
 struct DiagnosticCheck: Identifiable {
   enum Status {
     case pass, fail, unknown
@@ -11,6 +26,8 @@ struct DiagnosticCheck: Identifiable {
   var finding: String = "Not checked yet"
   /// Shown only for failures.
   var remedy: String?
+  /// Optional one-tap fix shown only for failures.
+  var action: RemedyAction?
 
   var id: String { title }
 }
@@ -41,6 +58,45 @@ final class DiagnosticsModel {
     }
   }
 
+  /// Feedback for the most recent remedy button (a copy confirmation or an error).
+  var actionNote: String?
+
+  func perform(_ action: RemedyAction) {
+    actionNote = nil
+    switch action {
+    case .copyCommand(let command):
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(command, forType: .string)
+      actionNote = "Copied “\(command)” to the clipboard."
+    case .enableARM64e:
+      enableARM64e()
+    }
+  }
+
+  private func enableARM64e() {
+    Task {
+      do {
+        try await Task.detached(priority: .userInitiated) { try Injector.enableARM64e() }.value
+        run()
+        offerRestart()
+      } catch InjectorError.cancelled {
+      } catch {
+        actionNote = error.localizedDescription
+      }
+    }
+  }
+
+  private func offerRestart() {
+    let alert = NSAlert()
+    alert.messageText = "Restart to apply the arm64e ABI?"
+    alert.informativeText = "boot-args now includes -arm64e_preview_abi; it takes effect after a restart."
+    alert.addButton(withTitle: "Restart Now")
+    alert.addButton(withTitle: "Later")
+    if alert.runModal() == .alertFirstButtonReturn {
+      Injector.restartMac()
+    }
+  }
+
   nonisolated private static func runAll() -> [DiagnosticCheck] {
     let marker = PluginMarker.current()
     return [sip(), bootArgs(), pluginVersion(marker), pluginActive(marker)]
@@ -61,7 +117,8 @@ final class DiagnosticsModel {
     } else {
       check.status = .fail
       check.finding = line
-      check.remedy = "Reboot into Recovery (hold the power button), open Terminal, run `csrutil disable`, then reboot."
+      check.remedy = "macOS can only disable SIP from Recovery: reboot holding the power button, open Terminal, run `csrutil disable`, reboot. Copy the command below."
+      check.action = .copyCommand("csrutil disable")
     }
     return check
   }
@@ -76,7 +133,8 @@ final class DiagnosticsModel {
     } else {
       check.status = .fail
       check.finding = value.isEmpty || output.contains("Error") ? "boot-args not set" : "boot-args = \(value)"
-      check.remedy = "Run `sudo nvram boot-args=-arm64e_preview_abi` in Terminal and reboot."
+      check.remedy = "Adds `-arm64e_preview_abi` to boot-args (keeping any existing flags) and takes effect after a restart."
+      check.action = .enableARM64e
     }
     return check
   }

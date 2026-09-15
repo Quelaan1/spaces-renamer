@@ -23,15 +23,21 @@ upstream setup: no MacForge, no `LetsMove`, no AppleScript login items.
 
 Renaming works by loading third-party code into a system process. macOS only allows that when:
 
-1. **System Integrity Protection is disabled.** Reboot into Recovery (hold the power button on
-   Apple Silicon), open Terminal, run `csrutil disable`, reboot.
-2. **The arm64e preview ABI is enabled**, because `Dock` and `WindowManager` are arm64e binaries:
+1. **System Integrity Protection is disabled.** macOS only lets you do this from Recovery: reboot
+   holding the power button on Apple Silicon, open Terminal, run `csrutil disable`, reboot. The
+   Diagnostics pane can copy the command to your clipboard, but the reboot into Recovery is manual —
+   Apple provides no way to automate it.
+2. **The arm64e preview ABI is enabled**, because `Dock` and `WindowManager` are arm64e binaries.
+   The Diagnostics pane has an **Enable & restart…** button that runs this for you (admin prompt,
+   keeping any existing boot-args) and offers to reboot; or do it by hand:
    ```sh
    sudo nvram boot-args=-arm64e_preview_abi
    ```
    then reboot.
 
-The app's Diagnostics pane checks both and prints the exact command to run when one is missing.
+Open the app's **Diagnostics** pane: it checks both, offers the one-tap fix for each, and — once
+they pass — the **Activation** section turns the plugin on. Disabling SIP is the only step that is
+unavoidably manual.
 
 ## Install
 

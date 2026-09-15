@@ -37,6 +37,7 @@ MIP_BUNDLES="$MIP_ROOT/Bundles"
 MIP_BUNDLE_NAME="SpacesRenamer.mip.bundle"
 
 DYLD_VAR="DYLD_INSERT_LIBRARIES"
+ARM64E_FLAG="-arm64e_preview_abi"
 
 log() { printf 'injector: %s\n' "$*" >&2; }
 die() { log "$*"; exit 1; }
@@ -146,6 +147,30 @@ mip_off() {
   log "mip bundle removed"
 }
 
+# ---------------------------------------------------------------------------- arm64e ABI
+
+current_boot_args() {
+  /usr/sbin/nvram boot-args 2>/dev/null | sed -e 's/^boot-args[[:space:]]*//'
+}
+
+arm64e_state() {
+  case " $(current_boot_args) " in
+    *" $ARM64E_FLAG "*) echo on ;;
+    *) echo off ;;
+  esac
+}
+
+# Add the preview-ABI flag to boot-args without disturbing any flags already there. Takes effect
+# on the next reboot. Root, because it writes NVRAM.
+arm64e_on() {
+  require_root "arm64e on"
+  if [ "$(arm64e_state)" = on ]; then log "arm64e ABI already enabled"; return 0; fi
+  args=$(current_boot_args)
+  newargs=$(printf '%s %s' "$args" "$ARM64E_FLAG" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  /usr/sbin/nvram boot-args="$newargs"
+  log "boot-args set to: $newargs (reboot to apply)"
+}
+
 # ---------------------------------------------------------------------------- status
 
 status() {
@@ -164,6 +189,7 @@ status() {
   if [ "$mipb" = on ]; then active=mip
   elif [ "$dyld" = on ]; then active=dyld
   else active=none; fi
+  echo "arm64e=$(arm64e_state)"
   echo "active=$active"
 }
 
@@ -181,6 +207,12 @@ case "$cmd" in
       boot) dyld_boot ;;
       *)    die "usage: injector.sh dyld on <dylib> | off" ;;
     esac ;;
+  arm64e)
+    sub=${2:-}
+    case "$sub" in
+      on)   arm64e_on ;;
+      *)    die "usage: injector.sh arm64e on  (root)" ;;
+    esac ;;
   mip)
     sub=${2:-}
     case "$sub" in
@@ -188,5 +220,5 @@ case "$cmd" in
       off) mip_off ;;
       *)   die "usage: injector.sh mip on <.bundle> | off  (root)" ;;
     esac ;;
-  *) die "usage: injector.sh {status|host|dyld|mip} ..." ;;
+  *) die "usage: injector.sh {status|host|dyld|mip|arm64e} ..." ;;
 esac
