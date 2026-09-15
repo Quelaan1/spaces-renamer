@@ -43,9 +43,7 @@ struct RenameView: View {
           .keyboardShortcut(.defaultAction)
       }
     }
-    .padding()
     .onAppear(perform: popoverOpened)
-    .onExitCommand { dismiss() }
   }
 
   private func monitorRow(_ monitor: Monitor) -> some View {

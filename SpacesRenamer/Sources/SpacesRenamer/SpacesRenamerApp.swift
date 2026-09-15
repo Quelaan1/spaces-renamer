@@ -9,6 +9,7 @@ typealias ViewState = SwiftUICore.State
 @main
 struct SpacesRenamerApp: App {
   @ViewState private var store = SpacesStore()
+  @ViewState private var diagnostics = DiagnosticsModel()
 
   init() {
     LoginItem.registerOnFirstLaunch()
@@ -16,7 +17,7 @@ struct SpacesRenamerApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      RenameView(store: store)
+      PopoverContent(store: store, diagnostics: diagnostics)
     } label: {
       Image(nsImage: Self.statusIcon)
     }
@@ -28,4 +29,37 @@ struct SpacesRenamerApp: App {
     image.isTemplate = true
     return image
   }()
+}
+
+/// Switches the popover between the rename grid and the diagnostics pane; Escape closes either.
+private struct PopoverContent: View {
+  enum Pane: Hashable {
+    case spaces, diagnostics
+  }
+
+  let store: SpacesStore
+  let diagnostics: DiagnosticsModel
+
+  @ViewState private var pane = Pane.spaces
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Picker("Pane", selection: $pane) {
+        Text("Spaces").tag(Pane.spaces)
+        Text("Diagnostics").tag(Pane.diagnostics)
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+
+      switch pane {
+      case .spaces:
+        RenameView(store: store)
+      case .diagnostics:
+        DiagnosticsView(model: diagnostics)
+      }
+    }
+    .padding()
+    .onExitCommand { dismiss() }
+  }
 }
