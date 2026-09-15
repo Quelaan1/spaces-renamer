@@ -1,0 +1,173 @@
+name: Release
+
+# A tag `vX.Y.Z` builds the universal plugin and the app, wraps them in a DMG and publishes a
+# GitHub release. With the signing secrets below present the DMG is Developer ID signed,
+# notarized, stapled, and a Homebrew cask is pushed to the tap; without them the release
+# carries an unsigned DMG and says so.
+#
+# Secrets (all optional, all required together for a signed release):
+#   DEVELOPER_ID_CERT_P12        base64 of the "Developer ID Application" .p12 export
+#   DEVELOPER_ID_CERT_PASSWORD   password of that .p12
+#   NOTARY_KEY_P8                contents of the App Store Connect API key (.p8)
+#   NOTARY_KEY_ID                the key id
+#   NOTARY_ISSUER_ID             the issuer id
+#   HOMEBREW_TAP_TOKEN           PAT with contents:write on the tap repository (cask publishing)
+# Variables:
+#   HOMEBREW_TAP_REPO            tap repository, default Quelaan1/homebrew-tap
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, sign, notarize, publish
+    runs-on: macos-26
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
+      version: ${{ steps.meta.outputs.version }}
+      dmg: ${{ steps.meta.outputs.dmg }}
+      sha256: ${{ steps.meta.outputs.sha256 }}
+    env:
+      DEVELOPER_ID_CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+      DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+      NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select the runner's Xcode toolchain
+        run: echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+
+      - name: Plugin hook tests
+        run: make test
+
+      - name: Decide whether this release can be signed
+        id: signing
+        run: |
+          if [ -n "$DEVELOPER_ID_CERT_P12" ] && [ -n "$DEVELOPER_ID_CERT_PASSWORD" ] && \
+             [ -n "$NOTARY_KEY_P8" ] && [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER_ID" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Signing/notarization secrets missing; publishing an unsigned DMG"
+          fi
+
+      - name: Import the Developer ID certificate
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$DEVELOPER_ID_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$DEVELOPER_ID_CERT_PASSWORD" -A \
+            -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)".*/\1/')"
+          test -n "$IDENTITY"
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "CODESIGN_FLAGS=--options runtime --timestamp" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build the DMG
+        run: make dmg
+
+      - name: Notarize and staple
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          echo "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          DMG="$(ls build/*.dmg)"
+          xcrun notarytool submit "$DMG" --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple "$DMG"
+          spctl --assess --type open --context context:primary-signature -v "$DMG"
+          rm -f "$RUNNER_TEMP/notary.p8"
+
+      - name: Release metadata
+        id: meta
+        run: |
+          DMG="$(ls build/*.dmg)"
+          echo "dmg=$(basename "$DMG")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "$DMG" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            NOTE="Developer ID signed and notarized."
+          else
+            NOTE="**Unsigned build**: the Developer ID certificate and notary key were not configured for this release. Gatekeeper will refuse to open it until you run \`xattr -d com.apple.quarantine\` on the DMG."
+          fi
+          gh release create "$GITHUB_REF_NAME" build/*.dmg --title "$GITHUB_REF_NAME" --generate-notes --notes "$NOTE"
+
+  cask:
+    name: Publish the Homebrew cask
+    needs: release
+    if: needs.release.outputs.signed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'Quelaan1/homebrew-tap' }}
+    steps:
+      - name: Skip without a tap token
+        if: env.TAP_TOKEN == ''
+        run: echo "::warning::HOMEBREW_TAP_TOKEN missing; cask not published"
+
+      - name: Checkout the tap
+        if: env.TAP_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ env.TAP_TOKEN }}
+
+      - name: Write and push the cask
+        if: env.TAP_TOKEN != ''
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          SHA256: ${{ needs.release.outputs.sha256 }}
+          DMG: ${{ needs.release.outputs.dmg }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p Casks
+          cat > Casks/spaces-renamer.rb <<EOF
+          cask "spaces-renamer" do
+            version "$VERSION"
+            sha256 "$SHA256"
+
+            url "https://github.com/$SOURCE_REPO/releases/download/v#{version}/$DMG"
+            name "Spaces Renamer"
+            desc "Rename macOS Spaces in Mission Control"
+            homepage "https://github.com/$SOURCE_REPO"
+
+            depends_on macos: ">= :tahoe"
+            depends_on arch: :arm64
+
+            app "SpacesRenamer.app"
+
+            caveats <<~CAVEATS
+              Renaming needs System Integrity Protection disabled and
+              sudo nvram boot-args=-arm64e_preview_abi
+              See https://github.com/$SOURCE_REPO#prerequisites
+            CAVEATS
+
+            zap trash: [
+              "~/Library/Containers/com.alexbeals.SpacesRenamer",
+            ]
+          end
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/spaces-renamer.rb
+          git commit -m "spaces-renamer $VERSION"
+          git push
