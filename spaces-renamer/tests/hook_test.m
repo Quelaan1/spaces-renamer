@@ -339,7 +339,74 @@ int main(int argc, const char *argv[]) {
     CALayer *wmCountMismatch = wmBar(displays[0], 2, 0);
     writeFixtures(@{@"A": @"One"}, @[monitor(display0, @[@"A"], @"A")]);
     [wmCountMismatch setBounds:wmCountMismatch.bounds];
-    CHECK([(NSString *)wmLabel(wmCountMismatch, 0).string isEqualToString:@"Desktop 1"], "space-count mismatch leaves the bar untouched");
+    CHECK([(NSString *)wmLabel(wmCountMismatch, 0).string isEqualToString:@"One"], "labels map by desktop number: Desktop 1 renamed");
+    CHECK([(NSString *)wmLabel(wmCountMismatch, 1).string isEqualToString:@"Desktop 2"], "a desktop number the layout does not know stays untouched");
+
+    printf("case: WindowManager expanded bar (each container is its own window)\n");
+    writeFixtures(@{@"A": @"Solo", @"F": @"Full", @"B": @"Second"},
+                  @[monitor(display0, @[@"A", @"F", @"B"], @"A")]);
+    // Full-screen app space between two desktops: its label is the app name and has no number.
+    NSDictionary *layoutWithApp = @{@"Display Identifier": display0,
+                                     @"Current Space": @{@"uuid": @"A", @"type": @0},
+                                     @"Spaces": @[@{@"uuid": @"A", @"type": @0}, @{@"uuid": @"F", @"type": @4}, @{@"uuid": @"B", @"type": @0}]};
+    writeFixtures(@{@"A": @"Solo", @"F": @"Full", @"B": @"Second"}, @[layoutWithApp]);
+    NSArray *titles = @[@"Desktop 1", @"Safari", @"Desktop 2"];
+    NSMutableArray<CATextLayer *> *rootLabels = [NSMutableArray array];
+    for (NSString *title in titles) {
+      FakeRootLayer *rootContainer = [FakeRootLayer layer];
+      rootContainer.fakeContext = [FakeContext new];
+      rootContainer.fakeContext.displayId = displays[0];
+      rootContainer.name = @"SpacesBarPreviewContainerLayer";
+      rootContainer.frame = CGRectMake(0, 0, 190, 129);
+      CALayer *holder = [CALayer layer];
+      holder.frame = CGRectMake(63, 105, 65, 24);
+      CATextLayer *label = [CATextLayer layer];
+      label.name = @"PreviewLabel";
+      label.fontSize = 14;
+      CTFontRef font = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, 14, NULL);
+      label.font = font;
+      CFRelease(font);
+      label.frame = CGRectMake(0, 4, 65, 17);
+      label.string = title;               // WindowManager titles the label before attaching it
+      [holder addSublayer:label];
+      [rootContainer addSublayer:holder];
+      [rootLabels addObject:label];
+    }
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    CHECK([(NSString *)rootLabels[0].string isEqualToString:@"Solo"], "root container: Desktop 1 renamed without any bar layout pass");
+    CHECK([(NSString *)rootLabels[1].string isEqualToString:@"Safari"], "root container: full-screen app label untouched");
+    CHECK([(NSString *)rootLabels[2].string isEqualToString:@"Second"], "root container: Desktop 2 skips the full-screen space when counting desktops");
+    rootLabels[0].string = @"Desktop 1";
+    CHECK([(NSString *)rootLabels[0].string isEqualToString:@"Solo"], "root container: WindowManager re-titling is overridden");
+    writeFixtures(@{@"A": @"Only"}, @[monitor(display0, @[@"A"], @"A")]);
+    FakeRootLayer *single = [FakeRootLayer layer];
+    single.fakeContext = [FakeContext new];
+    single.fakeContext.displayId = displays[0];
+    single.name = @"SpacesBarPreviewContainerLayer";
+    CALayer *singleHolder = [CALayer layer];
+    CATextLayer *singleLabel = [CATextLayer layer];
+    singleLabel.name = @"PreviewLabel";
+    singleLabel.string = @"Desktop";
+    [singleHolder addSublayer:singleLabel];
+    [single addSublayer:singleHolder];
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    CHECK([(NSString *)singleLabel.string isEqualToString:@"Only"], "the unnumbered \"Desktop\" title is the display's single desktop");
+    // A localized desktop word is learned from a numbered title, so the bare word is recognised too.
+    CATextLayer *german = [CATextLayer layer];
+    german.name = @"PreviewLabel";
+    german.string = @"Schreibtisch 2";
+    FakeRootLayer *germanSingle = [FakeRootLayer layer];
+    germanSingle.fakeContext = [FakeContext new];
+    germanSingle.fakeContext.displayId = displays[0];
+    germanSingle.name = @"SpacesBarPreviewContainerLayer";
+    CALayer *germanHolder = [CALayer layer];
+    CATextLayer *germanLabel = [CATextLayer layer];
+    germanLabel.name = @"PreviewLabel";
+    germanLabel.string = @"Schreibtisch";
+    [germanHolder addSublayer:germanLabel];
+    [germanSingle addSublayer:germanHolder];
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    CHECK([(NSString *)germanLabel.string isEqualToString:@"Only"], "a localized bare desktop word learned from a numbered title is recognised");
     if (displayCount >= 2) {
       printf("case: WindowManager bars on two displays\n");
       NSString *display1 = uuidForDisplay(displays[1]);

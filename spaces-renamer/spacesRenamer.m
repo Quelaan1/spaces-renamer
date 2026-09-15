@@ -38,6 +38,8 @@ static char OVERRIDDEN_WIDTH;
 static char OFFSET;
 static char NEW_X;
 static char TYPE;
+static char PENDING_APPLY;
+static char ORIGINAL_STRING;
 
 // Data channel between the app and the plugin: preference domains, not files.
 //
@@ -306,6 +308,7 @@ static NSMutableArray<Monitor *> *loadNamedMonitors() {
       NSMutableDictionary *screenDict = [NSMutableDictionary dictionary];
       screenDict[@"selected"] = @([uuid isEqualToString:selected]);
       screenDict[@"name"] = [name isKindOfClass:[NSString class]] ? name : @"";
+      screenDict[@"type"] = [listOfSpaces[j][@"type"] isKindOfClass:[NSNumber class]] ? listOfSpaces[j][@"type"] : @0;
       spaceNames[j] = screenDict;
     }
     monitor.spaces = spaceNames;
@@ -437,41 +440,91 @@ static CATextLayer *findLabelLayer(CALayer *layer) {
   return nil;
 }
 
-// Applies the custom names for the bar's display to its per-space labels. Containers are
-// matched to spaces by their left-to-right position, which is the same order as the CGS
-// space list for that display.
-static void applySpacesBarNames(CALayer *bar) {
-  NSMutableArray<CALayer *> *containers = [NSMutableArray array];
-  for (CALayer *sublayer in bar.sublayers) {
-    if ([sublayer.name isEqualToString:kSpacesBarContainerLayerName]) {
-      [containers addObject:sublayer];
+// The localized word WindowManager uses for a desktop ("Desktop", "Schreibtisch", ...), learned
+// from the first numbered title seen so the unnumbered single-desktop title can be told apart
+// from a full-screen app's name. English until something is learned.
+static NSString *desktopWord = @"Desktop";
+
+static void learnDesktopWord(NSString *title) {
+  NSUInteger end = title.length;
+  while (end > 0 && isdigit([title characterAtIndex:end - 1])) {
+    end--;
+  }
+  if (end == title.length || end == 0) {
+    return;
+  }
+  NSString *word = [[title substringToIndex:end] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (word.length && ![word isEqualToString:desktopWord]) {
+    [desktopWord release];
+    desktopWord = [word copy];
+  }
+}
+
+// The desktop number WindowManager put in a label ("Desktop 3" -> 3). A display with a single
+// desktop is labelled with the bare word (-> 1). Full-screen app spaces carry the app name and
+// have no number; they are left alone (0).
+static NSInteger desktopNumberFromTitle(NSString *title) {
+  if (title.length == 0) {
+    return 0;
+  }
+  NSUInteger end = title.length, start = end;
+  while (start > 0 && isdigit([title characterAtIndex:start - 1])) {
+    start--;
+  }
+  if (start < end) {
+    return [[title substringFromIndex:start] integerValue];
+  }
+  return [title isEqualToString:desktopWord] ? 1 : 0;
+}
+
+// The space a desktop number refers to: the Nth desktop-type space (type 0) of the display,
+// or, if the display does not have that many, the Nth desktop across all displays in order
+// (macOS numbers desktops per display when each display has its own Spaces, globally otherwise).
+static NSDictionary *spaceForDesktopNumber(NSArray<Monitor *> *names, Monitor *monitor, NSInteger number) {
+  if (number <= 0) {
+    return nil;
+  }
+  NSInteger remaining = number;
+  for (NSDictionary *space in monitor.spaces) {
+    if ([space[@"type"] integerValue] == 0 && --remaining == 0) {
+      return space;
     }
   }
-  if (containers.count == 0) {
+  remaining = number;
+  for (Monitor *candidate in names) {
+    for (NSDictionary *space in candidate.spaces) {
+      if ([space[@"type"] integerValue] == 0 && --remaining == 0) {
+        return space;
+      }
+    }
+  }
+  return nil;
+}
+
+// Applies the custom name to one "PreviewLabel". The label sits in a per-space container,
+// which is either a child of the collapsed bar (pointer away from the top edge) or the root of
+// its own window when Mission Control opens with the bar expanded (pointer at the top edge);
+// the display comes from the container's root context either way.
+static void applySpacesBarLabel(CATextLayer *label) {
+  CALayer *container = label.superlayer.superlayer;
+  if (![container.name isEqualToString:kSpacesBarContainerLayerName]) {
+    return;
+  }
+  NSString *original = objc_getAssociatedObject(label, &ORIGINAL_STRING);
+  NSInteger number = desktopNumberFromTitle(original);
+  if (number == 0) {
     return;
   }
   NSArray<Monitor *> *names = loadNamedMonitors();
-  NSString *displayUUID = displayUUIDForLayer(bar);
-  SRLog("SpacesBar containers=%lu display=%{public}@ monitors=%lu", (unsigned long)containers.count, displayUUID, (unsigned long)names.count);
   if (names.count == 0) {
     return;
   }
-  Monitor *monitor = monitorForDisplayUUID(names, displayUUID);
+  NSString *displayUUID = displayUUIDForLayer(container);
+  Monitor *monitor = monitorForDisplayUUID(names, displayUUID) ?: (names.count == 1 ? names[0] : nil);
   if (!monitor) {
-    // Single-display fallback: the only bar can only belong to the only display.
-    if (names.count == 1) {
-      monitor = names[0];
-    } else {
-      return;
-    }
-  }
-  if (monitor.spaces.count != containers.count) {
+    SRLog("label %{public}@ on unknown display %{public}@", original, displayUUID);
     return;
   }
-  [containers sortUsingComparator:^NSComparisonResult(CALayer *a, CALayer *b) {
-    CGFloat ax = a.frame.origin.x, bx = b.frame.origin.x;
-    return ax < bx ? NSOrderedAscending : (ax > bx ? NSOrderedDescending : NSOrderedSame);
-  }];
 
   static BOOL hookReported = NO;
   if (!hookReported) {
@@ -479,24 +532,30 @@ static void applySpacesBarNames(CALayer *bar) {
     writePluginStatus(YES);
   }
 
-  for (NSUInteger i = 0; i < containers.count; i++) {
-    CATextLayer *label = findLabelLayer(containers[i]);
-    if (!label) {
-      continue;
+  NSString *name = spaceForDesktopNumber(names, monitor, number)[@"name"];
+  if (name.length == 0) {
+    // Names are read fresh on every pass, so a cleared name must also clear the override;
+    // WindowManager keeps re-applying its own title on its own.
+    assign(label, &OVERRIDDEN_STRING, nil);
+    return;
+  }
+  assign(label, &OVERRIDDEN_STRING, name);
+  if (![label.string isEqual:name]) {
+    label.string = name;
+  }
+  fitSpacesBarLabel(label, container);
+  SRLog("display %{public}@ %{public}@ -> %{public}@ (label %{public}@)", monitor.displayUUID, original, label.string, NSStringFromRect(label.frame));
+}
+
+// Applies the names to every container currently attached to the collapsed bar.
+static void applySpacesBarNames(CALayer *bar) {
+  for (CALayer *sublayer in bar.sublayers) {
+    if ([sublayer.name isEqualToString:kSpacesBarContainerLayerName]) {
+      CATextLayer *label = findLabelLayer(sublayer);
+      if (label) {
+        applySpacesBarLabel(label);
+      }
     }
-    NSString *name = monitor.spaces[i][@"name"];
-    if (name.length == 0) {
-      // Names are read fresh on every layout pass, so a cleared name must also clear the
-      // override; WindowManager keeps re-applying its own "Desktop N" on its own.
-      assign(label, &OVERRIDDEN_STRING, nil);
-      continue;
-    }
-    assign(label, &OVERRIDDEN_STRING, name);
-    if (![label.string isEqual:name]) {
-      label.string = name;
-    }
-    fitSpacesBarLabel(label, containers[i]);
-    SRLog("display %{public}@ space %lu -> %{public}@ (label frame %{public}@, container %{public}@)", monitor.displayUUID, (unsigned long)i, label.string, NSStringFromRect(label.frame), NSStringFromRect(containers[i].frame));
   }
 }
 
@@ -684,16 +743,33 @@ ZKSwizzleInterfaceGroup(_SRCALayer, CALayer, CALayer, SpacesRenamer);
     applySpacesBarNames(self);
   }
 }
+
 @end
 
-// Keeps a renamed WindowManager label renamed: WindowManager re-applies "Desktop N" to the
-// same CATextLayer on later layout passes, and the override must win each time.
+// WindowManager's per-space labels: remember the title WindowManager wants ("Desktop N", which
+// identifies the space), apply the custom name once the label is in its container, and keep
+// the custom name when WindowManager re-applies its own title on later passes.
 ZKSwizzleInterfaceGroup(_SRCATextLayer, CATextLayer, CATextLayer, SpacesRenamer);
 @implementation _SRCATextLayer
 - (void)setString:(id)string {
-  id overridden = objc_getAssociatedObject(self, &OVERRIDDEN_STRING);
-  if ([overridden isKindOfClass:[NSString class]] && [self.name isEqualToString:kSpacesBarLabelLayerName]) {
-    string = overridden;
+  if ([self.name isEqualToString:kSpacesBarLabelLayerName]) {
+    id overridden = objc_getAssociatedObject(self, &OVERRIDDEN_STRING);
+    if ([string isKindOfClass:[NSString class]] && ![string isEqual:overridden]) {
+      assign(self, &ORIGINAL_STRING, string);
+      learnDesktopWord(string);
+      if (!objc_getAssociatedObject(self, &PENDING_APPLY)) {
+        // WindowManager sets the title before attaching the label to its container; apply on
+        // the next main-queue turn, once the tree is complete.
+        assign(self, &PENDING_APPLY, @YES);
+        dispatch_async(dispatch_get_main_queue(), ^{
+          assign(self, &PENDING_APPLY, nil);
+          applySpacesBarLabel(self);
+        });
+      }
+    }
+    if ([overridden isKindOfClass:[NSString class]]) {
+      string = overridden;
+    }
   }
   ZKOrig(void, string);
 }
