@@ -496,25 +496,28 @@ static NSDictionary *spaceForDesktopNumber(NSArray<Monitor *> *names, Monitor *m
 // which is either a child of the collapsed bar (pointer away from the top edge) or the root of
 // its own window when Mission Control opens with the bar expanded (pointer at the top edge);
 // the display comes from the container's root context either way.
-static void applySpacesBarLabel(CATextLayer *label) {
+// Applies the custom name to one "PreviewLabel", returning whether it reached a definitive
+// decision. NO means the label's container or its display context is not attached yet, so the
+// caller should try again on a later turn rather than leave WindowManager's "Desktop N" showing.
+static BOOL applySpacesBarLabel(CATextLayer *label) {
   CALayer *container = label.superlayer.superlayer;
   if (![container.name isEqualToString:kSpacesBarContainerLayerName]) {
-    return;
+    return NO;  // label not yet attached to its per-space container
   }
   NSString *original = objc_getAssociatedObject(label, &ORIGINAL_STRING);
   NSInteger number = desktopNumberFromTitle(original);
   if (number == 0) {
-    return;
+    return YES;  // full-screen app label (no desktop number): nothing to rename
   }
   NSArray<Monitor *> *names = loadNamedMonitors();
   if (names.count == 0) {
-    return;
+    return YES;  // no custom names published: leave WindowManager's own title
   }
   NSString *displayUUID = displayUUIDForLayer(container);
   Monitor *monitor = monitorForDisplayUUID(names, displayUUID) ?: (names.count == 1 ? names[0] : nil);
   if (!monitor) {
     SRLog("label %{public}@ on unknown display %{public}@", original, displayUUID);
-    return;
+    return NO;  // root CAContext (and thus the display) not attached yet
   }
 
   static BOOL hookReported = NO;
@@ -528,7 +531,7 @@ static void applySpacesBarLabel(CATextLayer *label) {
     // Names are read fresh on every pass, so a cleared name must also clear the override;
     // WindowManager keeps re-applying its own title on its own.
     assign(label, &OVERRIDDEN_STRING, nil);
-    return;
+    return YES;
   }
   assign(label, &OVERRIDDEN_STRING, name);
   if (![label.string isEqual:name]) {
@@ -536,6 +539,7 @@ static void applySpacesBarLabel(CATextLayer *label) {
   }
   fitSpacesBarLabel(label, container);
   SRLog("display %{public}@ %{public}@ -> %{public}@ (label %{public}@)", monitor.displayUUID, original, label.string, NSStringFromRect(label.frame));
+  return YES;
 }
 
 // Applies the names to every container currently attached to the collapsed bar.
@@ -548,6 +552,32 @@ static void applySpacesBarNames(CALayer *bar) {
       }
     }
   }
+}
+
+// Re-attempts applySpacesBarLabel over the next frames until it resolves, so the custom name
+// appears on the first painted frame it can. WindowManager sets the title before the label's
+// container and display context are attached; a single deferred pass often runs too early and
+// then nothing retries until WindowManager repaints ~1s later, which is the visible flash of
+// "Desktop N". Retries are spaced in real time (not back-to-back main-queue hops, which would
+// all fire before the tree is ready) and bounded so a genuinely unnamed label stops quickly.
+static const int kApplyRetryAttempts = 60;      // ~1s at kApplyRetryInterval
+static const double kApplyRetryInterval = 1.0 / 60.0;
+
+static void scheduleApplyRetry(CATextLayer *label, int remaining) {
+  if (remaining <= 0) {
+    return;
+  }
+  if (objc_getAssociatedObject(label, &PENDING_APPLY)) {
+    return;  // a retry chain is already in flight for this label
+  }
+  assign(label, &PENDING_APPLY, @YES);
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApplyRetryInterval * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    assign(label, &PENDING_APPLY, nil);
+    if (!applySpacesBarLabel(label)) {
+      scheduleApplyRetry(label, remaining - 1);
+    }
+  });
 }
 
 ZKSwizzleInterfaceGroup(_SRCALayer, CALayer, CALayer, SpacesRenamer);
@@ -713,15 +743,13 @@ ZKSwizzleInterfaceGroup(_SRCATextLayer, CATextLayer, CATextLayer, SpacesRenamer)
     if ([string isKindOfClass:[NSString class]] && ![string isEqual:overridden]) {
       assign(self, &ORIGINAL_STRING, string);
       learnDesktopWord(string);
-      if (!objc_getAssociatedObject(self, &PENDING_APPLY)) {
-        // WindowManager sets the title before attaching the label to its container; apply on
-        // the next main-queue turn, once the tree is complete.
-        assign(self, &PENDING_APPLY, @YES);
-        dispatch_async(dispatch_get_main_queue(), ^{
-          assign(self, &PENDING_APPLY, nil);
-          applySpacesBarLabel(self);
-        });
+      // Apply immediately so the first painted frame already carries the custom name. If the
+      // container/display is not attached yet, retry over the next frames instead of showing
+      // WindowManager's "Desktop N" until its next repaint.
+      if (!applySpacesBarLabel(self)) {
+        scheduleApplyRetry(self, kApplyRetryAttempts);
       }
+      overridden = objc_getAssociatedObject(self, &OVERRIDDEN_STRING);
     }
     if ([overridden isKindOfClass:[NSString class]]) {
       string = overridden;
