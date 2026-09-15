@@ -42,7 +42,7 @@ final class DiagnosticsModel {
   }
 
   nonisolated private static func runAll() -> [DiagnosticCheck] {
-    let marker = NSDictionary(contentsOf: Paths.pluginMarker)
+    let marker = PluginMarker.current()
     return [sip(), bootArgs(), pluginVersion(marker), pluginActive(marker)]
   }
 
@@ -81,7 +81,7 @@ final class DiagnosticsModel {
     return check
   }
 
-  nonisolated private static func pluginVersion(_ marker: NSDictionary?) -> DiagnosticCheck {
+  nonisolated private static func pluginVersion(_ marker: PluginMarker?) -> DiagnosticCheck {
     var check = DiagnosticCheck(title: "Plugin version")
     guard let marker else {
       check.status = .fail
@@ -89,35 +89,25 @@ final class DiagnosticsModel {
       check.remedy = activationTODO
       return check
     }
-    let version = marker["Version"] as? String ?? "unknown"
-    let build = marker["Build"] as? String ?? "unknown"
     check.status = .pass
-    check.finding = "Version \(version), build \(build)"
+    check.finding = "Version \(marker.version), build \(marker.build)"
     return check
   }
 
-  /// The marker names the host the plugin loaded into: `com.apple.dock` on macOS 26,
-  /// `com.apple.WindowManager` on macOS 27+ (which draws the Spaces bar there).
-  nonisolated private static func pluginActive(_ marker: NSDictionary?) -> DiagnosticCheck {
+  nonisolated private static func pluginActive(_ marker: PluginMarker?) -> DiagnosticCheck {
     var check = DiagnosticCheck(title: "Plugin active in host")
-    guard let marker, let markerPID = marker["HostPID"] as? Int, let bundleID = marker["HostBundleID"] as? String else {
+    guard let marker else {
       check.status = .fail
       check.finding = "not loaded"
       check.remedy = activationTODO
       return check
     }
-    let lastComponent = bundleID.split(separator: ".").last.map(String.init) ?? bundleID
-    let hostName = lastComponent.prefix(1).uppercased() + lastComponent.dropFirst()
-    guard let hostPID = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.processIdentifier else {
-      check.finding = "\(hostName) (\(bundleID)) is not running"
-      return check
-    }
-    if Int(hostPID) == markerPID {
+    if marker.isLive {
       check.status = .pass
-      check.finding = "active in \(hostName) (pid \(hostPID), \(bundleID))"
+      check.finding = "active in \(marker.hostName) (pid \(marker.hostPID), \(marker.hostBundleID))"
     } else {
       check.status = .fail
-      check.finding = "loaded into \(hostName) pid \(markerPID), but the current \(hostName) pid is \(hostPID) (\(bundleID))"
+      check.finding = "stale: loaded into \(marker.hostName) pid \(marker.hostPID) (\(marker.hostBundleID)), which is no longer running"
       check.remedy = activationTODO
     }
     return check
@@ -141,5 +131,44 @@ final class DiagnosticsModel {
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     return String(decoding: data, as: UTF8.self)
+  }
+}
+
+/// Status entry the plugin writes to its host's own preference domain under `SpacesRenamerPlugin`:
+/// `com.apple.WindowManager` on macOS 27+, `com.apple.dock` on macOS 26.
+struct PluginMarker {
+  static let key = "SpacesRenamerPlugin"
+  static let hostDomains = ["com.apple.WindowManager", "com.apple.dock"]
+
+  let version: String
+  let build: String
+  let hostPID: Int
+  let hostBundleID: String
+  let loadedAt: Date
+  /// `hostPID` is the pid of the running app with `hostBundleID`.
+  let isLive: Bool
+
+  var hostName: String {
+    let last = hostBundleID.split(separator: ".").last.map(String.init) ?? hostBundleID
+    return last.prefix(1).uppercased() + last.dropFirst()
+  }
+
+  /// The live entry across both host domains, else the most recently loaded (stale) one, else nil.
+  static func current() -> PluginMarker? {
+    let markers = hostDomains.compactMap { domain in
+      UserDefaults(suiteName: domain)?.dictionary(forKey: key).flatMap(PluginMarker.init(raw:))
+    }
+    return markers.first(where: \.isLive) ?? markers.max { $0.loadedAt < $1.loadedAt }
+  }
+
+  private init?(raw: [String: Any]) {
+    guard let hostPID = raw["HostPID"] as? Int, let hostBundleID = raw["HostBundleID"] as? String else { return nil }
+    self.hostPID = hostPID
+    self.hostBundleID = hostBundleID
+    self.version = raw["Version"] as? String ?? "unknown"
+    self.build = raw["Build"] as? String ?? "unknown"
+    self.loadedAt = raw["LoadedAt"] as? Date ?? .distantPast
+    self.isLive = NSRunningApplication.runningApplications(withBundleIdentifier: hostBundleID)
+      .contains { Int($0.processIdentifier) == hostPID }
   }
 }
