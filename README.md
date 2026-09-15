@@ -62,7 +62,8 @@ can turn that off in the popover).
    highlighted and focused.
 3. Type a name and press Return, or click **Update Names**. Clear a field to go back to the
    default "Desktop N" label. Escape closes without saving.
-4. Names appear the next time Mission Control lays out its Spaces bar (open Mission Control).
+4. Open Mission Control: the bar shows the names, both collapsed and expanded (pointer at the
+   top edge). Full-screen app spaces keep their app name.
 
 The popover also has **Launch at login** and a **Diagnostics** pane with these rows, each with
 the exact fix when it fails:
@@ -90,11 +91,12 @@ Preferences rather than files because `WindowManager` runs under a sandbox
 under `~/Library` but allows reading the `com.apple.dock` domain and writing its own. Inspect
 with `defaults read com.apple.dock SpacesRenamerNames`.
 
-Inside the host the plugin swizzles `CALayer` layout: on macOS 27 it finds WindowManager's
-`SpacesBar` layer, matches it to a display through the layer's `CAContext`, and rewrites and
-resizes each `PreviewLabel`; on macOS 26 it anchors on Dock's `SpacesListLayoutController`
-layer. Each bar is matched to its display by identity, so two displays with the same resolution
-keep their own names.
+Inside the host the plugin swizzles `CALayer`/`CATextLayer`: on macOS 27 it watches
+WindowManager's per-space `PreviewLabel` text layers, reads the display from the layer's
+`CAContext`, maps the "Desktop N" title to the Nth desktop of that display, and rewrites and
+resizes the label; on macOS 26 it anchors on Dock's `SpacesListLayoutController` layer. Each
+bar is matched to its display by identity, so two displays with the same resolution keep their
+own names.
 
 Names written by the original app (in
 `~/Library/Containers/com.alexbeals.SpacesRenamer/com.alexbeals.spacesrenamer.plist`) are
@@ -116,8 +118,9 @@ make -C SpacesRenamer run       # launch the app
 `Contents/Developer` to build with Xcode's toolchain instead. `CODESIGN_IDENTITY` defaults to
 ad-hoc (`-`). The plugin is built for `arm64` and `arm64e`; the app for `arm64`.
 
-Debugging the plugin: `make -C spaces-renamer DEBUG=1` compiles tracing into the unified log,
-readable with `log stream --predicate 'subsystem == "com.alexbeals.spaces-renamer"'`.
+Debugging the plugin: `make -C spaces-renamer clean && make -C spaces-renamer DEBUG=1` compiles
+tracing into the unified log, readable with
+`log stream --predicate 'subsystem == "com.alexbeals.spaces-renamer"'`.
 
 ## Release pipeline
 
