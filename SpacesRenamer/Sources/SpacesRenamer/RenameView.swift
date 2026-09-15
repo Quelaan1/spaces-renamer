@@ -7,7 +7,7 @@ struct RenameView: View {
 
   let store: SpacesStore
 
-  /// Edits in progress for every live Space, keyed by uuid; seeded from disk each time the popover opens.
+  /// Edits in progress for every live Space, keyed by uuid; seeded from the preference domain each time the popover opens.
   @ViewState private var drafts: [String: String] = [:]
   @FocusState private var focusedSpaceID: Int?
   @Environment(\.dismiss) private var dismiss

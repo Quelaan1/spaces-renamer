@@ -32,20 +32,21 @@ struct Monitor: Identifiable {
   }
 }
 
-/// Live Spaces layout plus the custom names, kept in sync with the two plists the Dock plugin reads.
+/// Live Spaces layout plus the custom names, kept in sync with the `com.apple.dock` preference keys the plugin reads.
 @MainActor
 @Observable
 final class SpacesStore {
   private(set) var monitors: [Monitor] = []
-  /// Custom names by Space uuid, as last read from disk. Empty string means no custom name.
+  /// Custom names by Space uuid, as last read from the preference domain. Empty string means no custom name.
   private(set) var names: [String: String] = [:]
 
   private let connection = _CGSDefaultConnection()
+  private let dock = UserDefaults(suiteName: Paths.dockDomain)!
   private var fileMonitor: DispatchSourceFileSystemObject?
   private var observers: [any NSObjectProtocol] = []
 
   init() {
-    try? FileManager.default.createDirectory(at: Paths.container, withIntermediateDirectories: true)
+    migrateLegacyNames()
     refresh()
 
     let refresh: @Sendable (Notification) -> Void = { [weak self] _ in
@@ -58,23 +59,20 @@ final class SpacesStore {
     watchSystemSpacesFile()
   }
 
-  /// Re-reads the layout, rewrites the currentspaces plist when it changed, and prunes names of vanished Spaces.
+  /// Re-reads the layout, rewrites `SpacesRenamerMonitors` when it changed, and prunes names of vanished Spaces.
   func refresh() {
     let raw = readLayout()
     monitors = raw.compactMap(Monitor.init(raw:))
-    writeCurrentSpaces(raw)
-    names = Self.readNames()
+    writeMonitors(raw)
+    names = readNames()
     pruneNames()
   }
 
-  /// Persists every provided name (keyed by Space uuid) into the names plist.
+  /// Persists every provided name (keyed by Space uuid) into `SpacesRenamerNames`.
   func save(_ newNames: [String: String]) {
-    let plist = NSMutableDictionary(contentsOf: Paths.names) ?? NSMutableDictionary()
-    var merged = plist["spaces_renaming"] as? [String: String] ?? [:]
+    var merged = readNames()
     merged.merge(newNames) { _, new in new }
-    plist["spaces_renaming"] = merged
-    plist.write(to: Paths.names, atomically: true)
-    names = merged
+    writeNames(merged)
   }
 
   /// `ManagedSpaceID` of the Space shown on the main screen, per the window server.
@@ -108,28 +106,38 @@ final class SpacesStore {
     return plist?.value(forKeyPath: "SpacesDisplayConfiguration.Management Data.Monitors") as? [[String: Any]] ?? []
   }
 
-  private func writeCurrentSpaces(_ raw: [[String: Any]]) {
-    let next = NSDictionary(dictionary: ["Monitors": raw])
-    let previous = NSDictionary(contentsOf: Paths.currentSpaces)
-    if previous == nil || !next.isEqual(previous) {
-      next.write(to: Paths.currentSpaces, atomically: true)
+  private func writeMonitors(_ raw: [[String: Any]]) {
+    let previous = dock.array(forKey: Paths.monitorsKey)
+    if previous == nil || !NSArray(array: raw).isEqual(previous) {
+      dock.set(raw, forKey: Paths.monitorsKey)
     }
   }
 
   // MARK: - Names
 
-  private static func readNames() -> [String: String] {
-    NSDictionary(contentsOf: Paths.names)?["spaces_renaming"] as? [String: String] ?? [:]
+  private func readNames() -> [String: String] {
+    dock.dictionary(forKey: Paths.namesKey) as? [String: String] ?? [:]
+  }
+
+  private func writeNames(_ newNames: [String: String]) {
+    dock.set(newNames, forKey: Paths.namesKey)
+    names = newNames
   }
 
   private func pruneNames() {
     let live = Set(monitors.flatMap(\.spaces).map(\.uuid))
     guard !live.isEmpty else { return }
     let kept = names.filter { live.contains($0.key) }
-    guard kept.count != names.count, let plist = NSMutableDictionary(contentsOf: Paths.names) else { return }
-    plist["spaces_renaming"] = kept
-    plist.write(to: Paths.names, atomically: true)
-    names = kept
+    if kept.count != names.count {
+      writeNames(kept)
+    }
+  }
+
+  /// One-time copy of the pre-2.0 container plist into the preference domain; the old file is left in place.
+  private func migrateLegacyNames() {
+    guard dock.object(forKey: Paths.namesKey) == nil,
+          let legacy = NSDictionary(contentsOf: Paths.legacyNames)?["spaces_renaming"] as? [String: String] else { return }
+    writeNames(legacy)
   }
 
   // MARK: - File monitor
