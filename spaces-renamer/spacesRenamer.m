@@ -127,15 +127,6 @@ __attribute__((constructor)) static void spacesRenamerDidLoad(void) {
 @implementation Monitor
 @end
 
-// Maximum online or active displays.
-//
-// SpacesRenamer uses the core graphics API to get online/active
-// displays by calling CGGetActiveDisplayList() and CGGetOnlineDisplayList(),
-// this definition is the count that will be used when calling those functions.
-//
-// If you have more than 12 monitors, this tweak can't help you with organization, good luck.
-#define kMaxDisplays 12
-
 int monitorIndex = 0;
 
 // Recursively re-applies setFrame on the modified children so that they don't change positions
@@ -626,34 +617,30 @@ ZKSwizzleInterfaceGroup(_SRCALayer, CALayer, CALayer, SpacesRenamer);
       return;
     }
 
-    // Take a best guess at which monitor it is
-    NSMutableArray *possibleMonitors = [[NSMutableArray alloc] init];
-    for (int i = 0; i < names.count; i++) {
-      if (
-          names[i].spaces.count == numSpaces && // Same number of spaces
-          selected >= 0 && selected < names[i].spaces.count &&
-          [names[i].spaces[selected][@"selected"] boolValue] // Same index is selected
-          ) {
-        [possibleMonitors addObject:[NSNumber numberWithInt:i]];
-      }
-    }
-    // If only one monitor, good to go
-    // If more than one monitor, but the sizes are different we can usually identify it
-    // Otherwise just go with the same cycling as it appears to have been last time it was good to go
-    if (possibleMonitors.count == 1) {
-      monitorIndex = [possibleMonitors[0] intValue];
+    // Which display is this bar on? Ask the layer's own CAContext first; identical displays
+    // (same resolution, mirrored) are indistinguishable by geometry.
+    Monitor *byDisplay = monitorForDisplayUUID(names, displayUUIDForLayer(self));
+    if (byDisplay) {
+      monitorIndex = (int)[names indexOfObjectIdenticalTo:byDisplay];
     } else {
-      // If the size of the bar only matches one of the monitors, then use that one
-      NSString *displayUUID = [self getDisplayUUID:arg1];
-      if (displayUUID != nil) {
-        for (int i = 0; i < names.count; i++) {
-          if ([names[i].displayUUID isEqualToString:displayUUID]) {
-            monitorIndex = i;
-          }
+      // Without a display, fall back to the bar shape: same number of spaces and the same
+      // highlighted index narrows it down to one display in most layouts. Otherwise keep the
+      // round-robin order the bars were last matched in.
+      NSMutableArray *possibleMonitors = [[NSMutableArray alloc] init];
+      for (int i = 0; i < names.count; i++) {
+        if (
+            names[i].spaces.count == numSpaces && // Same number of spaces
+            selected >= 0 && selected < names[i].spaces.count &&
+            [names[i].spaces[selected][@"selected"] boolValue] // Same index is selected
+            ) {
+          [possibleMonitors addObject:[NSNumber numberWithInt:i]];
         }
       }
+      if (possibleMonitors.count == 1) {
+        monitorIndex = [possibleMonitors[0] intValue];
+      }
+      [possibleMonitors release];
     }
-    [possibleMonitors release];
 
     monitorIndex = monitorIndex % names.count;
 
@@ -696,37 +683,6 @@ ZKSwizzleInterfaceGroup(_SRCALayer, CALayer, CALayer, SpacesRenamer);
   }
 
   return ZKOrig(void, arg1);
-}
-
-// This checks the same monitors we already fetched in
-// probablyDesktopSwitcher, but this is only fallback code if both
-// screens have the same number of spaces and the same ones selected
-// which is unlikely. Therefore it's better to eat that rare double
-// cost than fetch the UUID when it's not needed.
-- (NSString *)getDisplayUUID:(CGRect)rect {
-  // Get all of the monitors
-  CGDirectDisplayID displayArray[kMaxDisplays];
-  uint32_t displayCount;
-  CGGetActiveDisplayList(kMaxDisplays, displayArray, &displayCount);
-
-  // This is only evaluated after probablyDesktopSwitcher is truthy
-  // so one of them is guaranteed to match. We only want ONE to match
-  // to feel confident using this signal though. So if we've already
-  // matched we just return nil
-  CGDirectDisplayID matchingScreen = 0;
-  for (int i = 0; i < displayCount; i++) {
-    if (CGDisplayPixelsWide(displayArray[i]) == rect.size.width) {
-      if (matchingScreen != 0) {
-        return nil;
-      } else {
-        matchingScreen = displayArray[i];
-      }
-    }
-  }
-  // Go from the CGDirectDisplayID to the Display Identifier using private APIs
-  CFUUIDRef screenUuid = CGDisplayCreateUUIDFromDisplayID(matchingScreen);
-  CFStringRef uuid = CFUUIDCreateString(nil, screenUuid);
-  return (__bridge NSString *)uuid;
 }
 
 // WindowManager (macOS 27+) lays the Spaces bar out through bounds, never frame.

@@ -422,6 +422,30 @@ int main(int argc, const char *argv[]) {
       printf("skip: only one active display, two-display case not exercised\n");
     }
 
+    printf("case: Dock bars resolved by display, not by shape\n");
+    if (displayCount >= 2) {
+      NSString *display1 = uuidForDisplay(displays[1]);
+      // Same space count and the same highlighted index on both displays: shape alone is ambiguous.
+      writeFixtures(@{@"A": @"Left-1", @"B": @"Left-2", @"C": @"Right-1", @"D": @"Right-2"},
+                    @[monitor(display0, @[@"A", @"B"], @"A"), monitor(display1, @[@"C", @"D"], @"C")]);
+      CALayer *dockRight = spacesBar(2, 0);
+      FakeRootLayer *rightRoot = [FakeRootLayer layer];
+      rightRoot.fakeContext = [FakeContext new];
+      rightRoot.fakeContext.displayId = displays[1];
+      [rightRoot addSublayer:dockRight];
+      drive(dockRight);
+      CHECK([titleAt(dockRight, 1, 1) isEqualToString:@"Right-2"], "ambiguous Dock bar takes its own display's names");
+      CALayer *dockLeft = spacesBar(2, 0);
+      FakeRootLayer *leftRoot = [FakeRootLayer layer];
+      leftRoot.fakeContext = [FakeContext new];
+      leftRoot.fakeContext.displayId = displays[0];
+      [leftRoot addSublayer:dockLeft];
+      drive(dockLeft);
+      CHECK([titleAt(dockLeft, 1, 1) isEqualToString:@"Left-2"], "the other ambiguous Dock bar takes the other display's names");
+    } else {
+      printf("skip: only one active display, Dock two-display case not exercised\n");
+    }
+
     printf("case: unrelated layers pass through\n");
     CALayer *plain = [CALayer layer];
     plain.name = @"SomethingElse";
