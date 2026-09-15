@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build:
+    name: Build and test (macOS 26, arm64)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs the tags
+
+      - name: Select the runner's Xcode toolchain
+        run: echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+
+      - name: Plugin hook tests
+        run: make test
+
+      - name: Universal plugin (arm64 + arm64e)
+        run: |
+          make plugin
+          lipo -info spaces-renamer/build/spaces-renamer.dylib
+
+      - name: App
+        run: |
+          make app
+          file SpacesRenamer/build/SpacesRenamer.app/Contents/MacOS/SpacesRenamer
+
+      - name: Unsigned DMG
+        run: make dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpacesRenamer-unsigned
+          path: build/*.dmg
+          if-no-files-found: error
