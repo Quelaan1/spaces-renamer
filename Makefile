@@ -15,7 +15,9 @@ export DEVELOPER_DIR
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
 BUILD ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
 CODESIGN_IDENTITY ?= -
-export VERSION BUILD CODESIGN_IDENTITY
+# CI sets CODESIGN_FLAGS to "--options runtime --timestamp" for a hardened, notarizable build.
+CODESIGN_FLAGS ?=
+export VERSION BUILD CODESIGN_IDENTITY CODESIGN_FLAGS
 
 APP    := SpacesRenamer/build/SpacesRenamer.app
 DYLIB  := spaces-renamer/build/spaces-renamer.dylib
@@ -46,7 +48,7 @@ bundle $(BUNDLE): $(DYLIB) packaging/mip/Info.plist | build-dir
 	mkdir -p $(BUNDLE)/Contents/MacOS
 	sed -e 's/__VERSION__/$(VERSION)/' -e 's/__BUILD__/$(BUILD)/' packaging/mip/Info.plist > $(BUNDLE)/Contents/Info.plist
 	cp $(DYLIB) $(BUNDLE)/Contents/MacOS/SpacesRenamer
-	codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUNDLE)/Contents/MacOS/SpacesRenamer
+	codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_FLAGS) $(BUNDLE)/Contents/MacOS/SpacesRenamer
 
 # Everything the app needs to activate either injector lives inside the bundle: the plugin at
 # Contents/PlugIns, the mechanism script and the MIP bundle in Contents/Resources. Embedding runs
@@ -57,7 +59,7 @@ embed: app plugin bundle
 	cp $(SCRIPT) $(APP)/Contents/Resources/
 	rm -rf $(APP)/Contents/Resources/SpacesRenamer.mip.bundle
 	cp -R $(BUNDLE) $(APP)/Contents/Resources/
-	codesign --force --deep --sign "$(CODESIGN_IDENTITY)" \
+	codesign --force --deep --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_FLAGS) \
 	  --entitlements SpacesRenamer/SpacesRenamer.entitlements $(APP)
 
 # The DMG ships the embedded app as-is.
