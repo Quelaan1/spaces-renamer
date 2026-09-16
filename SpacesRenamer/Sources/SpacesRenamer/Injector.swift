@@ -218,10 +218,16 @@ final class ActivationModel {
   /// "not read yet" and avoid flashing a prompt at an already-active user.
   private(set) var hasLoaded = false
   private(set) var isBusy = false
+  /// The plugin's own report that it is loaded in the running host, independent of which injector
+  /// (if any) this app manages. This is the ground truth for "renaming is on".
+  private(set) var pluginIsLive = false
   var backend: InjectorBackend = .dyld
   var errorMessage: String?
 
   var isEmbedded: Bool { Injector.isEmbedded }
+
+  /// Renaming is active if the plugin is loaded, however it got there, or an injector we manage is on.
+  var isActive: Bool { pluginIsLive || state.active != .none }
 
   func refresh() {
     Task { await reload() }
@@ -254,7 +260,11 @@ final class ActivationModel {
   }
 
   private func reload() async {
-    state = await Task.detached(priority: .userInitiated) { Injector.status() }.value
+    let snapshot = await Task.detached(priority: .userInitiated) {
+      (status: Injector.status(), live: PluginMarker.current()?.isLive ?? false)
+    }.value
+    state = snapshot.status
+    pluginIsLive = snapshot.live
     hasLoaded = true
   }
 }
