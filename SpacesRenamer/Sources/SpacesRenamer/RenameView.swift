@@ -6,6 +6,7 @@ struct RenameView: View {
   private static let maxVisibleCells = 6
 
   let store: SpacesStore
+  let settings: AppSettings
 
   /// Edits in progress for every live Space, keyed by uuid; seeded from the preference domain each time the popover opens.
   @ViewState private var drafts: [String: String] = [:]
@@ -13,6 +14,14 @@ struct RenameView: View {
   @Environment(\.dismiss) private var dismiss
   @ViewState private var launchAtLogin = LoginItem.isEnabled
   @ViewState private var loginStatus = LoginItem.statusDescription
+
+  private var showSpaceNameInMenuBar: Binding<Bool> {
+    Binding(get: { settings.showSpaceNameInMenuBar }, set: { settings.showSpaceNameInMenuBar = $0 })
+  }
+
+  private var showSpaceChangeHUD: Binding<Bool> {
+    Binding(get: { settings.showSpaceChangeHUD }, set: { settings.showSpaceChangeHUD = $0 })
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -26,22 +35,27 @@ struct RenameView: View {
 
       Divider()
 
-      HStack(spacing: 12) {
-        Toggle("Launch at login", isOn: $launchAtLogin)
-          .toggleStyle(.checkbox)
-          .onChange(of: launchAtLogin) { _, enabled in
-            guard enabled != LoginItem.isEnabled else { return }
-            try? LoginItem.setEnabled(enabled)
-            refreshLoginItem()
-          }
-        Text(loginStatus)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        Spacer()
-        Button("Quit") { NSApp.terminate(nil) }
-        Button("Update Names", action: save)
-          .keyboardShortcut(.defaultAction)
+      VStack(alignment: .leading, spacing: 8) {
+        Toggle("Show Space name in the menu bar", isOn: showSpaceNameInMenuBar)
+        Toggle("Glass HUD on Space change", isOn: showSpaceChangeHUD)
+
+        HStack(spacing: 12) {
+          Toggle("Launch at login", isOn: $launchAtLogin)
+            .onChange(of: launchAtLogin) { _, enabled in
+              guard enabled != LoginItem.isEnabled else { return }
+              try? LoginItem.setEnabled(enabled)
+              refreshLoginItem()
+            }
+          Text(loginStatus)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          Spacer()
+          Button("Quit") { NSApp.terminate(nil) }
+          Button("Update Names", action: save)
+            .keyboardShortcut(.defaultAction)
+        }
       }
+      .toggleStyle(.checkbox)
     }
     .onAppear(perform: popoverOpened)
   }

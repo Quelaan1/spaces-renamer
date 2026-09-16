@@ -8,28 +8,51 @@ typealias ViewState = SwiftUICore.State
 
 @main
 struct SpacesRenamerApp: App {
-  @ViewState private var store = SpacesStore()
+  @ViewState private var store: SpacesStore
+  @ViewState private var settings: AppSettings
   @ViewState private var diagnostics = DiagnosticsModel()
   @ViewState private var activation = ActivationModel()
+  private let hud: SpaceHUDController
 
   init() {
     LoginItem.registerOnFirstLaunch()
+    let store = SpacesStore()
+    let settings = AppSettings()
+    _store = ViewState(initialValue: store)
+    _settings = ViewState(initialValue: settings)
+    hud = SpaceHUDController(store: store, settings: settings)
   }
 
   var body: some Scene {
     MenuBarExtra {
-      PopoverContent(store: store, diagnostics: diagnostics, activation: activation)
+      PopoverContent(store: store, diagnostics: diagnostics, activation: activation, settings: settings)
     } label: {
-      Image(nsImage: Self.statusIcon)
+      MenuBarLabel(store: store, settings: settings)
     }
     .menuBarExtraStyle(.window)
   }
 
-  private static let statusIcon: NSImage = {
+  static let statusIcon: NSImage = {
     let image = NSImage(named: "StatusBarIcon") ?? NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: "Spaces")!
     image.isTemplate = true
     return image
   }()
+}
+
+/// The menu-bar item: the current Space's name (optional) to the left of the icon, live-updating as
+/// the Space changes.
+private struct MenuBarLabel: View {
+  let store: SpacesStore
+  let settings: AppSettings
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(nsImage: SpacesRenamerApp.statusIcon)
+      if settings.showSpaceNameInMenuBar, !store.menuBarLabel.isEmpty {
+        Text(store.menuBarLabel)
+      }
+    }
+  }
 }
 
 /// Switches the popover between the rename grid and the diagnostics pane; Escape closes either.
@@ -41,6 +64,7 @@ private struct PopoverContent: View {
   let store: SpacesStore
   let diagnostics: DiagnosticsModel
   let activation: ActivationModel
+  let settings: AppSettings
 
   @ViewState private var pane = Pane.spaces
   @Environment(\.dismiss) private var dismiss
@@ -60,7 +84,7 @@ private struct PopoverContent: View {
 
       switch pane {
       case .spaces:
-        RenameView(store: store)
+        RenameView(store: store, settings: settings)
       case .diagnostics:
         DiagnosticsView(model: diagnostics, activation: activation)
       }

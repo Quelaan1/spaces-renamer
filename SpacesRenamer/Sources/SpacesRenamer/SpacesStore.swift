@@ -32,6 +32,22 @@ struct Monitor: Identifiable {
   }
 }
 
+extension Monitor {
+  /// The display label of this monitor's current Space: the custom name if set, else "Desktop N"
+  /// counting only real desktops. Empty when the current Space is a full-screen app (no title here).
+  func currentSpaceLabel(names: [String: String]) -> String {
+    guard let current = spaces.first(where: { $0.uuid == currentSpaceUUID }) else { return "" }
+    if let name = names[current.uuid], !name.isEmpty { return name }
+    if current.isFullscreenApp { return "" }
+    var number = 0
+    for space in spaces where !space.isFullscreenApp {
+      number += 1
+      if space.uuid == current.uuid { return "Desktop \(number)" }
+    }
+    return "Desktop"
+  }
+}
+
 /// Live Spaces layout plus the custom names, kept in sync with the `com.apple.dock` preference keys the plugin reads.
 @MainActor
 @Observable
@@ -94,6 +110,41 @@ final class SpacesStore {
     return monitors.lazy
       .compactMap { monitor in monitor.spaces.first { $0.uuid == monitor.currentSpaceUUID } }
       .first
+  }
+
+  // MARK: - Display labels (menu bar + HUD)
+
+  /// The monitor driving a given screen, matched by display UUID (or the `Main` identifier).
+  func monitor(for screen: NSScreen) -> Monitor? {
+    if let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+       let cfUUID = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue(),
+       let uuid = CFUUIDCreateString(nil, cfUUID) as String?,
+       let match = monitors.first(where: { $0.id == uuid }) {
+      return match
+    }
+    if screen == NSScreen.main, let main = monitors.first(where: { $0.id == "Main" }) {
+      return main
+    }
+    return monitors.count == 1 ? monitors.first : nil
+  }
+
+  /// The current Space's label on the main screen, for the menu-bar item.
+  var menuBarLabel: String {
+    if let screen = NSScreen.main, let monitor = monitor(for: screen) {
+      return monitor.currentSpaceLabel(names: names)
+    }
+    return monitors.first?.currentSpaceLabel(names: names) ?? ""
+  }
+
+  /// The current Space label for every attached display, for the per-display HUD. Reads fresh so it
+  /// is correct immediately after a Space change, regardless of observer ordering.
+  func currentDisplayLabels() -> [(screen: NSScreen, label: String)] {
+    refresh()
+    return NSScreen.screens.compactMap { screen in
+      guard let monitor = monitor(for: screen) else { return nil }
+      let label = monitor.currentSpaceLabel(names: names)
+      return label.isEmpty ? nil : (screen, label)
+    }
   }
 
   // MARK: - Layout
