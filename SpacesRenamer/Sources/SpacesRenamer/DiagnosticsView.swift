@@ -85,10 +85,15 @@ private struct ActivationSection: View {
   private var state: InjectorState { model.state }
 
   private var activeText: String {
+    if state.active == .none {
+      return model.pluginIsLive
+        ? "The plugin is loaded in \(state.host) — renaming is active. No injector managed by this app is set up."
+        : "No injector is active — the Spaces bar shows the default names."
+    }
     switch state.active {
-    case .none: "No injector is active — the Spaces bar shows the default names."
-    case .dyld: "Active via DYLD_INSERT_LIBRARIES in \(state.host)."
-    case .mip: "Active via MIP in \(state.host)."
+    case .dyld: return "Active via DYLD_INSERT_LIBRARIES in \(state.host)."
+    case .mip: return "Active via MIP in \(state.host)."
+    case .none: return ""
     }
   }
 
