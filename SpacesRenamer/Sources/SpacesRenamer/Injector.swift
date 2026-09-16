@@ -214,6 +214,9 @@ enum Injector {
 @Observable
 final class ActivationModel {
   private(set) var state = InjectorState()
+  /// True once the first status read has completed, so the UI can distinguish "not active" from
+  /// "not read yet" and avoid flashing a prompt at an already-active user.
+  private(set) var hasLoaded = false
   private(set) var isBusy = false
   var backend: InjectorBackend = .dyld
   var errorMessage: String?
@@ -252,5 +255,6 @@ final class ActivationModel {
 
   private func reload() async {
     state = await Task.detached(priority: .userInitiated) { Injector.status() }.value
+    hasLoaded = true
   }
 }

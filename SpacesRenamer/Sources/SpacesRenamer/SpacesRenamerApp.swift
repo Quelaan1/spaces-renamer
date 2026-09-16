@@ -47,6 +47,10 @@ private struct PopoverContent: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
+      if activation.hasLoaded && activation.state.active == .none {
+        ActivationPrompt(activation: activation) { pane = .diagnostics }
+      }
+
       Picker("Pane", selection: $pane) {
         Text("Spaces").tag(Pane.spaces)
         Text("Diagnostics").tag(Pane.diagnostics)
@@ -63,5 +67,46 @@ private struct PopoverContent: View {
     }
     .padding()
     .onExitCommand { dismiss() }
+    .onAppear { activation.refresh() }
+  }
+}
+
+/// First-run nudge shown above the panes whenever no injector is active, so the very first thing a
+/// new user sees is a one-click way to turn renaming on — not an empty grid with no hint.
+private struct ActivationPrompt: View {
+  let activation: ActivationModel
+  let showDetails: () -> Void
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 8) {
+      Image(systemName: "wand.and.stars")
+        .font(.title3)
+        .foregroundStyle(.tint)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Renaming isn't active yet")
+          .font(.headline)
+        Text("Load the plugin so your names show in Mission Control.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+          Button("Activate", action: activation.activate)
+            .buttonStyle(.borderedProminent)
+            .disabled(activation.isBusy || !activation.isEmbedded)
+          Button("Details", action: showDetails)
+          if activation.isBusy {
+            ProgressView().controlSize(.small)
+          }
+        }
+        if let error = activation.errorMessage {
+          Text(error)
+            .font(.footnote)
+            .foregroundStyle(.red)
+            .textSelection(.enabled)
+        }
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(10)
+    .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.12)))
   }
 }
