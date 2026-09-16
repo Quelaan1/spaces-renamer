@@ -68,12 +68,27 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$RUNNER_TEMP/cert.p12" -P "$DEVELOPER_ID_CERT_PASSWORD" -A \
-            -t cert -f pkcs12 -k "$KEYCHAIN"
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN"
+          # Add our keychain to the search list without dropping the login/system keychains, so
+          # trust evaluation can still reach Apple's roots and intermediates.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | xargs)
+          # A Developer ID Application cert chains through Apple's "Developer ID Certification
+          # Authority" intermediate, which a .p12 export usually omits; without it `find-identity -v`
+          # treats the identity as invalid. Fetch and import it so the chain resolves.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
+            -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN" || true
+          security import "$RUNNER_TEMP/cert.p12" -P "$DEVELOPER_ID_CERT_PASSWORD" \
+            -f pkcs12 -k "$KEYCHAIN" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
           IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)".*/\1/')"
-          test -n "$IDENTITY"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No valid 'Developer ID Application' codesigning identity was found. Check that DEVELOPER_ID_CERT_P12 is a Developer ID Application certificate exported *with its private key* (Keychain Access ▸ My Certificates), and that the password is correct."
+            echo "Codesigning identities present in the imported keychain:"
+            security find-identity -v -p codesigning "$KEYCHAIN" || true
+            security find-identity -p codesigning "$KEYCHAIN" || true
+            exit 1
+          fi
+          echo "Using identity: $IDENTITY"
           echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
           echo "CODESIGN_FLAGS=--options runtime --timestamp" >> "$GITHUB_ENV"
           rm -f "$RUNNER_TEMP/cert.p12"
