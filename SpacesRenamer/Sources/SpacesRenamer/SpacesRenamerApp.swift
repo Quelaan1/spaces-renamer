@@ -47,10 +47,10 @@ private struct MenuBarLabel: View {
 
   var body: some View {
     HStack(spacing: 4) {
+      Image(nsImage: SpacesRenamerApp.statusIcon)
       if settings.showSpaceNameInMenuBar, !store.menuBarLabel.isEmpty {
         Text(store.menuBarLabel)
       }
-      Image(nsImage: SpacesRenamerApp.statusIcon)
     }
   }
 }
