@@ -9,7 +9,9 @@
 DEVELOPER_DIR ?= /Library/Developer/CommandLineTools
 export DEVELOPER_DIR
 
-CC      := $(DEVELOPER_DIR)/usr/bin/clang
+# Resolve clang through xcrun so it works under both the Command Line Tools and a full Xcode
+# (whose clang lives in the toolchain, not $(DEVELOPER_DIR)/usr/bin). CI sets DEVELOPER_DIR to Xcode.
+CC      := $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun -f clang)
 SDK     := $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk macosx --show-sdk-path)
 ARCHS   ?= arm64 arm64e
 MIN_OS  ?= 26.0
