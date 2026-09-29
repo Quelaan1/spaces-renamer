@@ -137,7 +137,7 @@ private struct ActivationSection: View {
         .foregroundStyle(.secondary)
 
       if model.backend == .mip, !state.mipInstalled {
-        Text("MIP is not installed. Install github.com/LIJI32/MIP first (see the README), then reopen this app.")
+        Text("MIP is not installed. Install github.com/LIJI32/MIP first (see docs/DEVELOPMENT.md in the repository), then reopen this app.")
           .font(.footnote)
           .foregroundStyle(Color.orange)
       }
