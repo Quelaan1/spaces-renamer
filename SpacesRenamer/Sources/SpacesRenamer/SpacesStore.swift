@@ -122,7 +122,9 @@ final class SpacesStore {
        let match = monitors.first(where: { $0.id == uuid }) {
       return match
     }
-    if screen == NSScreen.main, let main = monitors.first(where: { $0.id == "Main" }) {
+    // `Main` is the primary (menu-bar) display, not `NSScreen.main`, which follows keyboard focus.
+    if screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID == CGMainDisplayID(),
+       let main = monitors.first(where: { $0.id == "Main" }) {
       return main
     }
     return monitors.count == 1 ? monitors.first : nil
@@ -130,12 +132,12 @@ final class SpacesStore {
 
   /// The current Space label for every attached display, for the per-display HUD. Reads fresh so it
   /// is correct immediately after a Space change, regardless of observer ordering.
-  func currentDisplayLabels() -> [(screen: NSScreen, label: String)] {
+  func currentDisplayLabels() -> [(screen: NSScreen, monitor: Monitor, label: String)] {
     refresh()
     return NSScreen.screens.compactMap { screen in
       guard let monitor = monitor(for: screen) else { return nil }
       let label = monitor.currentSpaceLabel(names: names)
-      return label.isEmpty ? nil : (screen, label)
+      return label.isEmpty ? nil : (screen, monitor, label)
     }
   }
 
