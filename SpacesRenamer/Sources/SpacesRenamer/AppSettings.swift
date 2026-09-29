@@ -15,7 +15,7 @@ final class AppSettings {
     didSet { UserDefaults.standard.set(showSpaceNameInMenuBar, forKey: Key.menuBarName) }
   }
 
-  /// Flash a glass HUD, centered on every display, when the Space changes.
+  /// Flash a glass HUD, centered on the display whose Space changed.
   var showSpaceChangeHUD: Bool {
     didSet { UserDefaults.standard.set(showSpaceChangeHUD, forKey: Key.spaceChangeHUD) }
   }

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Shows a brief, glass-styled HUD centered on every display when the Space changes — each display
+/// Shows a brief, glass-styled HUD centered on each display whose Space just changed — each display
 /// showing its own current Space's name. Driven by `activeSpaceDidChangeNotification`; gated on the
 /// user setting. Pure app UI, independent of the injected plugin.
 @MainActor
@@ -11,10 +11,13 @@ final class SpaceHUDController {
   private var observer: (any NSObjectProtocol)?
   /// One reusable panel per screen, keyed by the screen's display id.
   private var panels: [CGDirectDisplayID: SpaceHUDPanel] = [:]
+  /// Each monitor's current Space uuid as of the last change, so only displays that changed show the HUD.
+  private var lastSpaces: [String: String]
 
   init(store: SpacesStore, settings: AppSettings) {
     self.store = store
     self.settings = settings
+    lastSpaces = Self.currentSpaces(store.monitors)
     observer = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
@@ -23,13 +26,20 @@ final class SpaceHUDController {
   }
 
   private func spaceChanged() {
+    let labels = store.currentDisplayLabels()
+    let previous = lastSpaces
+    lastSpaces = Self.currentSpaces(store.monitors)
     guard settings.showSpaceChangeHUD else { return }
-    for (screen, label) in store.currentDisplayLabels() {
+    for (screen, monitor, label) in labels where previous[monitor.id] != monitor.currentSpaceUUID {
       guard let id = screen.displayID else { continue }
       let panel = panels[id] ?? SpaceHUDPanel()
       panels[id] = panel
       panel.show(label, on: screen)
     }
+  }
+
+  private static func currentSpaces(_ monitors: [Monitor]) -> [String: String] {
+    Dictionary(monitors.map { ($0.id, $0.currentSpaceUUID) }, uniquingKeysWith: { first, _ in first })
   }
 }
 
