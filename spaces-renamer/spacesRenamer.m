@@ -105,16 +105,49 @@ static void writePluginStatus(BOOL hookFired) {
 // =====================================================================================
 // Desktop switching on the app's behalf.
 //
-// The app's menu-bar strip asks for a desktop by posting kSwitchDesktopNotification with the
-// desktop number as its state. The plugin presses macOS's own "Switch to Desktop N" shortcut from
-// inside its host: WindowManager carries `com.apple.private.tcc.allow` for kTCCServicePostEvent,
-// so it may post key events with no permission prompt, which the app itself cannot. A shortcut the
-// user left off is turned on in the window server for just this press and back off afterwards
-// (the technique of LinearMouse's `postSymbolicHotKey`), so keyboard settings never change.
+// The app's menu-bar strip asks for a Space by posting kSwitchSpaceNotification with its
+// ManagedSpaceID as the state.
+//
+// macOS 27 (WindowManager): the plugin changes the display's current Space with the window-server
+// calls WindowManager itself imports for Mission Control. No key is pressed. Pressing the "Switch
+// to Desktop N" shortcut instead only ever worked for desktop 1: the window server passed the
+// press for any other desktop to the front app as a plain Control-N keystroke (#21).
+//
+// macOS 26 (Dock): the plugin still presses "Switch to Desktop N" from inside the Dock, turning a
+// shortcut the user left off on for just this press and back off afterwards (the technique of
+// LinearMouse's `postSymbolicHotKey`), so keyboard settings never change.
 // =====================================================================================
 
-// Same name as `Paths.switchDesktopNotification` in the app.
-static const char *const kSwitchDesktopNotification = "com.alexbeals.spacesrenamer.switch-desktop";
+// Same name as `Paths.switchSpaceNotification` in the app. Its state is the ManagedSpaceID to show.
+static const char *const kSwitchSpaceNotification = "com.alexbeals.spacesrenamer.switch-space";
+
+extern int CGSMainConnectionID(void);
+extern CFArrayRef CGSCopyManagedDisplaySpaces(int connection);
+extern CFStringRef CGSCopyManagedDisplayForSpace(int connection, uint64_t space);
+extern uint64_t CGSManagedDisplayGetCurrentSpace(int connection, CFStringRef display);
+extern void CGSManagedDisplaySetCurrentSpace(int connection, CFStringRef display, uint64_t space);
+extern void CGSShowSpaces(int connection, CFArrayRef spaces);
+extern void CGSHideSpaces(int connection, CFArrayRef spaces);
+
+// Shows the Space on its display: the new Space is shown before it becomes current and the old
+// one hidden after, so the display never goes blank. The switch is immediate, without the slide
+// the shortcut animates.
+static void switchToSpace(uint64_t spaceID) {
+  int connection = CGSMainConnectionID();
+  CFStringRef display = CGSCopyManagedDisplayForSpace(connection, spaceID);
+  if (!display) {
+    SRLog("space %llu is on no display", spaceID);
+    return;
+  }
+  uint64_t current = CGSManagedDisplayGetCurrentSpace(connection, display);
+  if (current != spaceID) {
+    CGSShowSpaces(connection, (CFArrayRef)@[@(spaceID)]);
+    CGSManagedDisplaySetCurrentSpace(connection, display, spaceID);
+    CGSHideSpaces(connection, (CFArrayRef)@[@(current)]);
+    SRLog("display %{public}@: space %llu -> %llu", display, current, spaceID);
+  }
+  CFRelease(display);
+}
 
 // Private SkyLight symbolic hot keys: macOS's built-in shortcuts by number.
 extern CGError CGSGetSymbolicHotKeyValue(uint32_t hotKey, uint16_t *keyEquivalent, uint16_t *virtualKeyCode, uint32_t *modifiers);
@@ -200,12 +233,35 @@ static void switchToDesktop(uint64_t number) {
   });
 }
 
-static void listenForSwitchRequests(void) {
+// The number in "Switch to Desktop N" of a Space: desktops counted across all displays in layout
+// order, full-screen app Spaces (type 4) excluded. 0 when the Space no longer exists.
+static uint64_t desktopNumberForSpace(uint64_t spaceID) {
+  NSArray *monitors = [(NSArray *)CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) autorelease];
+  uint64_t number = 0;
+  for (NSDictionary *monitor in monitors) {
+    for (NSDictionary *space in monitor[@"Spaces"]) {
+      if ([space[@"type"] integerValue] == 4) {
+        continue;
+      }
+      number++;
+      if ([space[@"ManagedSpaceID"] unsignedLongLongValue] == spaceID) {
+        return number;
+      }
+    }
+  }
+  return 0;
+}
+
+static void listenForSwitchRequests(BOOL inWindowManager) {
   int token;
-  notify_register_dispatch(kSwitchDesktopNotification, &token, dispatch_get_main_queue(), ^(int t) {
-    uint64_t number = 0;
-    notify_get_state(t, &number);
-    switchToDesktop(number);
+  notify_register_dispatch(kSwitchSpaceNotification, &token, dispatch_get_main_queue(), ^(int t) {
+    uint64_t spaceID = 0;
+    notify_get_state(t, &spaceID);
+    if (inWindowManager) {
+      switchToSpace(spaceID);
+    } else {
+      switchToDesktop(desktopNumberForSpace(spaceID));
+    }
   });
 }
 
@@ -224,10 +280,10 @@ __attribute__((constructor)) static void spacesRenamerDidLoad(void) {
     SRLog("loaded into %{public}@ (pid %d), swizzled=%d", host, getpid(), swizzled);
     (void)swizzled;
     writePluginStatus(NO);
-    // Only the Spaces-bar host answers switch requests; with both hosts injected, both would press.
+    // Only the Spaces-bar host answers switch requests; with both hosts injected, both would switch.
     BOOL windowManagerDraws = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
     if ([host isEqualToString:windowManagerDraws ? @"com.apple.WindowManager" : @"com.apple.dock"]) {
-      listenForSwitchRequests();
+      listenForSwitchRequests(windowManagerDraws);
     }
   }
 }

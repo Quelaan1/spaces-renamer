@@ -7,25 +7,16 @@ struct StripItem: Identifiable, Hashable {
   /// `ManagedSpaceID` of the desktop.
   let id: Int
   let name: String
-  /// The number in "Switch to Desktop N": desktops counted across all displays in layout order,
-  /// full-screen app Spaces excluded.
-  let number: Int
   let isCurrent: Bool
 }
 
 extension SpacesStore {
   /// The named desktops of one display, in order. Unnamed desktops are left out.
   func stripItems(for monitor: Monitor) -> [StripItem] {
-    var number = 0
-    var items: [StripItem] = []
-    for candidate in monitors {
-      for space in candidate.spaces where !space.isFullscreenApp {
-        number += 1
-        guard candidate.id == monitor.id, let name = names[space.uuid], !name.isEmpty else { continue }
-        items.append(StripItem(id: space.id, name: name, number: number, isCurrent: space.uuid == candidate.currentSpaceUUID))
-      }
+    monitor.spaces.compactMap { space in
+      guard !space.isFullscreenApp, let name = names[space.uuid], !name.isEmpty else { return nil }
+      return StripItem(id: space.id, name: name, isCurrent: space.uuid == monitor.currentSpaceUUID)
     }
-    return items
   }
 }
 
@@ -145,7 +136,7 @@ private final class StripPanel {
 
   func show(items: [StripItem], frame: CGRect) {
     hosting.rootView = StripView(items: items) { item in
-      DesktopSwitcher.switchTo(desktop: item.number)
+      DesktopSwitcher.switchTo(space: item.id)
     }
     panel.setFrame(frame, display: true)
     panel.orderFrontRegardless()
@@ -183,16 +174,16 @@ private struct StripView: View {
   }
 }
 
-/// Asks the plugin to switch desktops. macOS has no public API to change the Space, and an app
-/// may not press keys without a permission prompt, so the plugin presses the "Switch to Desktop N"
-/// shortcut from inside WindowManager, which macOS already allows to post key events. Nothing
-/// happens while the plugin is not active.
+/// Asks the plugin to switch to a Space. macOS has no public API to change the Space, so the plugin
+/// does it from inside the process that draws Mission Control: on macOS 27 with the window-server
+/// calls WindowManager uses itself, on macOS 26 by pressing the "Switch to Desktop N" shortcut
+/// inside the Dock. Nothing happens while the plugin is not active.
 enum DesktopSwitcher {
-  static func switchTo(desktop number: Int) {
+  static func switchTo(space id: Int) {
     var token: Int32 = 0
-    guard notify_register_check(Paths.switchDesktopNotification, &token) == NOTIFY_STATUS_OK else { return }
-    notify_set_state(token, UInt64(number))
-    notify_post(Paths.switchDesktopNotification)
+    guard notify_register_check(Paths.switchSpaceNotification, &token) == NOTIFY_STATUS_OK else { return }
+    notify_set_state(token, UInt64(id))
+    notify_post(Paths.switchSpaceNotification)
     notify_cancel(token)
   }
 }
