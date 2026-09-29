@@ -153,6 +153,15 @@ out MIP activation until MIP is there.
 4. Open Mission Control — the names show in both the collapsed and the expanded (pointer at the top
    edge) bar, and appear on the very first frame with no "Desktop N" flash. Full-screen app Spaces
    keep their app name.
+5. Named desktops also sit in the middle of the menu bar (right of the notch on a MacBook). Each
+   display's menu bar shows only that display's names, sized to fit, with its current desktop
+   highlighted; unnamed desktops are left out, so a display without names shows nothing. The names
+   can cover an app's menus that reach the middle of the menu bar, and they hide while the menu bar
+   is hidden. Click a name to switch to it: the plugin presses macOS's own "Switch to Desktop N" shortcut
+   (⌃1, ⌃2, …) from inside WindowManager, turning it on for that one press if it is off in System
+   Settings and back off straight after. No permission prompt and no shortcut setup are needed, but
+   switching only works while the plugin is active, and only desktops 1–16 have such a shortcut.
+   Turn the names off with **Show named desktops in the menu bar**.
 
 Names update live while the plugin is active; the app doesn't need to stay open.
 

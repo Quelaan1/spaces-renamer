@@ -13,6 +13,7 @@
 #import <Cocoa/Cocoa.h>
 #import <unistd.h>
 #import <os/log.h>
+#import <notify.h>
 
 // `make DEBUG=1` compiles verbose tracing of the layer tree into the unified log:
 //   log stream --predicate 'subsystem == "com.alexbeals.spaces-renamer"'
@@ -101,6 +102,113 @@ static void writePluginStatus(BOOL hookFired) {
   }
 }
 
+// =====================================================================================
+// Desktop switching on the app's behalf.
+//
+// The app's menu-bar strip asks for a desktop by posting kSwitchDesktopNotification with the
+// desktop number as its state. The plugin presses macOS's own "Switch to Desktop N" shortcut from
+// inside its host: WindowManager carries `com.apple.private.tcc.allow` for kTCCServicePostEvent,
+// so it may post key events with no permission prompt, which the app itself cannot. A shortcut the
+// user left off is turned on in the window server for just this press and back off afterwards
+// (the technique of LinearMouse's `postSymbolicHotKey`), so keyboard settings never change.
+// =====================================================================================
+
+// Same name as `Paths.switchDesktopNotification` in the app.
+static const char *const kSwitchDesktopNotification = "com.alexbeals.spacesrenamer.switch-desktop";
+
+// Private SkyLight symbolic hot keys: macOS's built-in shortcuts by number.
+extern CGError CGSGetSymbolicHotKeyValue(uint32_t hotKey, uint16_t *keyEquivalent, uint16_t *virtualKeyCode, uint32_t *modifiers);
+extern bool CGSIsSymbolicHotKeyEnabled(uint32_t hotKey);
+extern CGError CGSSetSymbolicHotKeyEnabled(uint32_t hotKey, bool enabled);
+
+static const uint32_t kFirstDesktopHotKey = 118;  // "Switch to Desktop 1"; 118-133 cover desktops 1-16
+static const uint64_t kLastDesktop = 16;
+// ponytail: fixed wait before switching a shortcut back off; a window server that handles the press
+// later than this misses the switch. Upgrade to LinearMouse's marker-event wait if that is seen.
+static const double kHotKeyRestoreDelay = 0.3;
+static uint32_t hotKeysEnabledByUs;  // bit n-1: desktop n's shortcut was off and is on for a press
+static uint64_t switchGeneration;
+
+// Presses the key with its modifiers, bracketed by explicit modifier down/up events so the system
+// does not keep believing Control is held afterwards.
+static void postKeyWithModifiers(CGKeyCode keyCode, CGEventFlags flags) {
+  CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+  const struct { CGEventFlags flag; CGKeyCode key; } modifierKeys[] = {
+    {kCGEventFlagMaskShift, 0x38}, {kCGEventFlagMaskControl, 0x3B},
+    {kCGEventFlagMaskAlternate, 0x3A}, {kCGEventFlagMaskCommand, 0x37},
+  };
+  const int count = sizeof(modifierKeys) / sizeof(modifierKeys[0]);
+  CGEventFlags held = 0;
+  for (int i = 0; i < count; i++) {
+    if (!(flags & modifierKeys[i].flag)) continue;
+    held |= modifierKeys[i].flag;
+    CGEventRef event = CGEventCreateKeyboardEvent(source, modifierKeys[i].key, true);
+    CGEventSetType(event, kCGEventFlagsChanged);
+    CGEventSetFlags(event, held);
+    CGEventPost(kCGSessionEventTap, event);
+    CFRelease(event);
+  }
+  for (int down = 1; down >= 0; down--) {
+    CGEventRef event = CGEventCreateKeyboardEvent(source, keyCode, down);
+    CGEventSetFlags(event, flags);
+    CGEventPost(kCGSessionEventTap, event);
+    CFRelease(event);
+  }
+  for (int i = count - 1; i >= 0; i--) {
+    if (!(flags & modifierKeys[i].flag)) continue;
+    held &= ~modifierKeys[i].flag;
+    CGEventRef event = CGEventCreateKeyboardEvent(source, modifierKeys[i].key, false);
+    CGEventSetType(event, kCGEventFlagsChanged);
+    CGEventSetFlags(event, held);
+    CGEventPost(kCGSessionEventTap, event);
+    CFRelease(event);
+  }
+  if (source) CFRelease(source);
+}
+
+static void switchToDesktop(uint64_t number) {
+  if (number < 1 || number > kLastDesktop) {
+    return;
+  }
+  uint32_t hotKey = kFirstDesktopHotKey + (uint32_t)number - 1;
+  uint16_t character = 0, keyCode = 0;
+  uint32_t modifiers = 0;
+  // Success is reported even with no key assigned: 0xFFFF means cleared, 0 with no character never set.
+  if (CGSGetSymbolicHotKeyValue(hotKey, &character, &keyCode, &modifiers) != kCGErrorSuccess ||
+      keyCode == 0xFFFF || (keyCode == 0 && character == 0xFFFF)) {
+    SRLog("desktop %llu has no shortcut key", number);
+    return;
+  }
+  if (!CGSIsSymbolicHotKeyEnabled(hotKey)) {
+    CGSSetSymbolicHotKeyEnabled(hotKey, true);
+    hotKeysEnabledByUs |= 1u << (number - 1);
+  }
+  postKeyWithModifiers(keyCode, modifiers);
+  SRLog("switch to desktop %llu (key %u, modifiers 0x%x)", number, keyCode, modifiers);
+
+  uint64_t generation = ++switchGeneration;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kHotKeyRestoreDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (generation != switchGeneration) {
+      return;  // a later press is still in flight; it restores everything
+    }
+    for (uint64_t desktop = 1; desktop <= kLastDesktop; desktop++) {
+      if (hotKeysEnabledByUs & (1u << (desktop - 1))) {
+        CGSSetSymbolicHotKeyEnabled(kFirstDesktopHotKey + (uint32_t)desktop - 1, false);
+      }
+    }
+    hotKeysEnabledByUs = 0;
+  });
+}
+
+static void listenForSwitchRequests(void) {
+  int token;
+  notify_register_dispatch(kSwitchDesktopNotification, &token, dispatch_get_main_queue(), ^(int t) {
+    uint64_t number = 0;
+    notify_get_state(t, &number);
+    switchToDesktop(number);
+  });
+}
+
 // The hooks are only installed inside the process that draws the Spaces bar: Dock up to
 // macOS 26, WindowManager from macOS 27. Injection mechanisms such as DYLD_INSERT_LIBRARIES
 // can land the dylib in unrelated processes, which must stay untouched (and must not overwrite
@@ -116,6 +224,11 @@ __attribute__((constructor)) static void spacesRenamerDidLoad(void) {
     SRLog("loaded into %{public}@ (pid %d), swizzled=%d", host, getpid(), swizzled);
     (void)swizzled;
     writePluginStatus(NO);
+    // Only the Spaces-bar host answers switch requests; with both hosts injected, both would press.
+    BOOL windowManagerDraws = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
+    if ([host isEqualToString:windowManagerDraws ? @"com.apple.WindowManager" : @"com.apple.dock"]) {
+      listenForSwitchRequests();
+    }
   }
 }
 

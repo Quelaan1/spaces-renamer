@@ -128,14 +128,6 @@ final class SpacesStore {
     return monitors.count == 1 ? monitors.first : nil
   }
 
-  /// The current Space's label on the main screen, for the menu-bar item.
-  var menuBarLabel: String {
-    if let screen = NSScreen.main, let monitor = monitor(for: screen) {
-      return monitor.currentSpaceLabel(names: names)
-    }
-    return monitors.first?.currentSpaceLabel(names: names) ?? ""
-  }
-
   /// The current Space label for every attached display, for the per-display HUD. Reads fresh so it
   /// is correct immediately after a Space change, regardless of observer ordering.
   func currentDisplayLabels() -> [(screen: NSScreen, label: String)] {

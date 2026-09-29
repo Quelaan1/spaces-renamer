@@ -36,7 +36,7 @@ struct RenameView: View {
       Divider()
 
       VStack(alignment: .leading, spacing: 8) {
-        Toggle("Show Space name in the menu bar", isOn: showSpaceNameInMenuBar)
+        Toggle("Show named desktops in the menu bar", isOn: showSpaceNameInMenuBar)
         Toggle("Glass HUD on Space change", isOn: showSpaceChangeHUD)
 
         HStack(spacing: 12) {

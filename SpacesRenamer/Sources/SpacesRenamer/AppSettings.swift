@@ -10,7 +10,7 @@ final class AppSettings {
     static let spaceChangeHUD = "ShowSpaceChangeHUD"
   }
 
-  /// Show the current Space's name to the left of the menu-bar icon.
+  /// Show each display's named desktops, clickable, to the left of the menu-bar icon.
   var showSpaceNameInMenuBar: Bool {
     didSet { UserDefaults.standard.set(showSpaceNameInMenuBar, forKey: Key.menuBarName) }
   }
