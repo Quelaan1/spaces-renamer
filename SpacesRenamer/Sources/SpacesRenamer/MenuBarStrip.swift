@@ -82,8 +82,10 @@ final class MenuBarStripController {
   private func render() {
     var shown = Set<CGDirectDisplayID>()
     for screen in NSScreen.screens where settings.showSpaceNameInMenuBar {
-      guard let id = screen.displayID else { continue }
-      let items = store.monitor(for: screen).map(store.stripItems(for:)) ?? []
+      guard let id = screen.displayID, let monitor = store.monitor(for: screen) else { continue }
+      // A full-screen app hides the menu bar, and the strip would otherwise stay over the app (#22).
+      if monitor.spaces.first(where: { $0.uuid == monitor.currentSpaceUUID })?.isFullscreenApp == true { continue }
+      let items = store.stripItems(for: monitor)
       guard !items.isEmpty, let stripFrame = Self.stripFrame(on: screen, width: MenuBarStrip.width(of: items)) else { continue }
       shown.insert(id)
       let panel = panels[id] ?? StripPanel()
@@ -96,7 +98,7 @@ final class MenuBarStripController {
   }
 
   /// The strip's frame, centred in the display's menu bar: to the right of the camera housing on a
-  /// display with a notch. Nil while the display shows no menu bar (auto-hidden or full screen).
+  /// display with a notch. Nil while the display shows no menu bar (auto-hidden).
   private static func stripFrame(on screen: NSScreen, width: CGFloat) -> CGRect? {
     let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
     guard menuBarHeight > 0 else { return nil }
@@ -129,7 +131,8 @@ private final class StripPanel {
     panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
     panel.hidesOnDeactivate = false
     panel.becomesKeyOnlyIfNeeded = true
-    // No .fullScreenAuxiliary: the strip stays off full-screen Spaces, where the menu bar is hidden.
+    // No .fullScreenAuxiliary. On macOS 27 that alone does not keep the strip off full-screen
+    // Spaces, so render() hides it there itself (#22).
     panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
     panel.contentView = hosting
   }
