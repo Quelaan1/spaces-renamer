@@ -137,7 +137,7 @@ require_root() { [ "$(id -u)" -eq 0 ] || die "$1 requires root (run under sudo o
 mip_on() {
   bundle=${1:-}
   require_root "mip on"
-  [ -d "$MIP_ROOT" ] || die "MIP is not installed at $MIP_ROOT (see README: install LIJI32/MIP first)"
+  [ -d "$MIP_ROOT" ] || die "MIP is not installed at $MIP_ROOT (see docs/DEVELOPMENT.md: install LIJI32/MIP first)"
   [ -n "$bundle" ] || die "mip on: missing assembled <.bundle> path"
   [ -d "$bundle" ] || die "mip on: no bundle directory at $bundle"
   /bin/mkdir -p "$MIP_BUNDLES"
