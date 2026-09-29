@@ -105,12 +105,22 @@ identity, so two displays with the same resolution keep their own names.
 different names per display without leaving a gap. The app instead draws one borderless panel per
 display, centred in its menu bar.
 
-**Switching desktops.** macOS has no public API to change the Space, and an app cannot post key
-events without an Accessibility prompt. The app posts the Darwin notification
-`com.alexbeals.spacesrenamer.switch-desktop` with the desktop number as its state. The plugin, in the
-Spaces-bar host, presses macOS's own "Switch to Desktop N" symbolic hot key (118–133). WindowManager
-carries `com.apple.private.tcc.allow` → `kTCCServicePostEvent`, so no prompt is needed. A shortcut the
-user left off is enabled in the window server for just that press, and turned off again 0.3 s later.
+**Switching desktops.** macOS has no public API to change the Space. The app posts the Darwin
+notification `com.alexbeals.spacesrenamer.switch-space` with the clicked desktop's `ManagedSpaceID`
+as its state, and the plugin, in the Spaces-bar host, does the switch:
+
+- **macOS 27 (WindowManager)** — the plugin shows the new Space, makes it current on its display and
+  hides the old one (`CGSShowSpaces`, `CGSManagedDisplaySetCurrentSpace`, `CGSHideSpaces`), calls
+  WindowManager itself imports for Mission Control. No key is pressed, and the switch is immediate,
+  without the slide animation.
+- **macOS 26 (Dock)** — the plugin presses macOS's own "Switch to Desktop N" symbolic hot key
+  (118–133), turning a shortcut the user left off on for just that press and off again 0.3 s later.
+
+The hot-key method was dropped on macOS 27 because the window server honoured the plugin's press
+only for desktop 1: for any other desktop it delivered Control-N to the front app as an ordinary
+keystroke (#21). Why is unknown. The notification was renamed from `switch-desktop` (a desktop
+number) at the same time, so a plugin loaded before the change ignores requests instead of misreading
+a Space id as a desktop number.
 
 Names written by the original app (in
 `~/Library/Containers/com.alexbeals.SpacesRenamer/com.alexbeals.spacesrenamer.plist`) are imported the

@@ -9,9 +9,10 @@ enum Paths {
   static let dockDomain = "com.apple.dock"
   static let namesKey = "SpacesRenamerNames"
   static let monitorsKey = "SpacesRenamerMonitors"
-  /// Darwin notification the plugin answers by switching to the desktop number in its state. Same
-  /// name as `kSwitchDesktopNotification` in the plugin.
-  static let switchDesktopNotification = "com.alexbeals.spacesrenamer.switch-desktop"
+  /// Darwin notification the plugin answers by switching to the Space whose `ManagedSpaceID` is its
+  /// state. Same name as `kSwitchSpaceNotification` in the plugin. It replaced `switch-desktop`
+  /// (a desktop number), so a plugin loaded before the change ignores requests instead of misreading them.
+  static let switchSpaceNotification = "com.alexbeals.spacesrenamer.switch-space"
 
   private static let library = FileManager.default
     .homeDirectoryForCurrentUser
