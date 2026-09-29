@@ -105,9 +105,3 @@ private struct SpaceHUDView: View {
       .fixedSize()
   }
 }
-
-private extension NSScreen {
-  var displayID: CGDirectDisplayID? {
-    deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
-  }
-}

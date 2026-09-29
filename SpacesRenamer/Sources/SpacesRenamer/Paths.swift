@@ -9,6 +9,9 @@ enum Paths {
   static let dockDomain = "com.apple.dock"
   static let namesKey = "SpacesRenamerNames"
   static let monitorsKey = "SpacesRenamerMonitors"
+  /// Darwin notification the plugin answers by switching to the desktop number in its state. Same
+  /// name as `kSwitchDesktopNotification` in the plugin.
+  static let switchDesktopNotification = "com.alexbeals.spacesrenamer.switch-desktop"
 
   private static let library = FileManager.default
     .homeDirectoryForCurrentUser

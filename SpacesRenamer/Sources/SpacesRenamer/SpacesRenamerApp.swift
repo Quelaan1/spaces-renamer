@@ -13,6 +13,7 @@ struct SpacesRenamerApp: App {
   @ViewState private var diagnostics = DiagnosticsModel()
   @ViewState private var activation = ActivationModel()
   private let hud: SpaceHUDController
+  private let strip: MenuBarStripController
 
   init() {
     LoginItem.registerOnFirstLaunch()
@@ -21,13 +22,14 @@ struct SpacesRenamerApp: App {
     _store = ViewState(initialValue: store)
     _settings = ViewState(initialValue: settings)
     hud = SpaceHUDController(store: store, settings: settings)
+    strip = MenuBarStripController(store: store, settings: settings)
   }
 
   var body: some Scene {
     MenuBarExtra {
       PopoverContent(store: store, diagnostics: diagnostics, activation: activation, settings: settings)
     } label: {
-      MenuBarLabel(store: store, settings: settings)
+      MenuBarLabel()
     }
     .menuBarExtraStyle(.window)
   }
@@ -38,46 +40,22 @@ struct SpacesRenamerApp: App {
     return image
   }()
 
-  /// The menu-bar content as one template image — the name drawn to the left of the icon. A
-  /// MenuBarExtra always renders a separate label image on the leading edge, so the only way to put
-  /// the name *before* the icon is to bake both into a single image.
-  static func menuBarImage(name: String) -> NSImage {
-    let iconLength: CGFloat = 16
-    let icon = statusIcon
-    guard !name.isEmpty else {
-      let image = NSImage(size: NSSize(width: iconLength, height: iconLength))
-      image.lockFocus()
-      icon.draw(in: NSRect(x: 0, y: 0, width: iconLength, height: iconLength))
-      image.unlockFocus()
-      image.isTemplate = true
-      return image
-    }
-    let font = NSFont.menuBarFont(ofSize: 0)
-    let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
-    let text = name as NSString
-    let textSize = text.size(withAttributes: attributes)
-    let gap: CGFloat = 5
-    let height = ceil(max(textSize.height, iconLength))
-    let width = ceil(textSize.width + gap + iconLength)
-    let image = NSImage(size: NSSize(width: width, height: height))
+  /// The menu-bar icon at menu-bar size, as a template image.
+  static let menuBarImage: NSImage = {
+    let length: CGFloat = 16
+    let image = NSImage(size: NSSize(width: length, height: length))
     image.lockFocus()
-    text.draw(at: NSPoint(x: 0, y: (height - textSize.height) / 2), withAttributes: attributes)
-    icon.draw(in: NSRect(x: textSize.width + gap, y: (height - iconLength) / 2, width: iconLength, height: iconLength))
+    statusIcon.draw(in: NSRect(x: 0, y: 0, width: length, height: length))
     image.unlockFocus()
     image.isTemplate = true
     return image
-  }
+  }()
 }
 
-/// The menu-bar item: the current Space's name (optional) to the left of the icon, live-updating as
-/// the Space changes.
+/// The menu-bar item: just the icon. The named desktops are drawn per display by `MenuBarStripController`.
 private struct MenuBarLabel: View {
-  let store: SpacesStore
-  let settings: AppSettings
-
   var body: some View {
-    Image(nsImage: SpacesRenamerApp.menuBarImage(
-      name: settings.showSpaceNameInMenuBar ? store.menuBarLabel : ""))
+    Image(nsImage: SpacesRenamerApp.menuBarImage)
   }
 }
 
