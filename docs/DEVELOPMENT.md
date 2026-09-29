@@ -103,7 +103,9 @@ identity, so two displays with the same resolution keep their own names.
 **Menu-bar strip.** macOS mirrors a status item onto every display's menu bar at one shared width
 (one real `NSStatusBarWindow` plus `NSStatusItemReplicantView` copies), so a status item cannot show
 different names per display without leaving a gap. The app instead draws one borderless panel per
-display, centred in its menu bar.
+display, centred in its menu bar. On macOS 27 the panel still shows over full-screen apps although it
+lacks `.fullScreenAuxiliary`, so the app hides a display's panel itself while that display's current
+Space is a full-screen app (#22).
 
 **Switching desktops.** macOS has no public API to change the Space, and an app cannot post key
 events without an Accessibility prompt. The app posts the Darwin notification
