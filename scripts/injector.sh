@@ -81,6 +81,16 @@ write_agent_plist() {
 PLIST
 }
 
+# Replaces $2 with a copy of $1 as a new file, renamed into place. Never copy over the injected
+# dylib in place: the kernel keeps the old file's code signature for that inode, dyld then refuses
+# the new contents, and every process it is inserted into (every app and shell) dies at launch
+# until reboot (#13).
+install_file() {
+  tmp="$2.tmp.$$"
+  /bin/cp "$1" "$tmp"
+  /bin/mv -f "$tmp" "$2"
+}
+
 dyld_on() {
   dylib=${1:-}
   [ -n "$dylib" ] || die "dyld on: missing <dylib> path"
@@ -88,10 +98,10 @@ dyld_on() {
   dylib=$(cd "$(dirname "$dylib")" && printf '%s/%s' "$(pwd)" "$(basename "$dylib")")
 
   /bin/mkdir -p "$SUPPORT"
-  /bin/cp "$dylib" "$DYLIB_STORE"
+  install_file "$dylib" "$DYLIB_STORE"
   # Keep a stable copy of this script for the LaunchAgent, so activation survives moving the app.
   if [ "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" != "$SCRIPT_STORE" ]; then
-    /bin/cp "$0" "$SCRIPT_STORE"
+    install_file "$0" "$SCRIPT_STORE"
   fi
 
   write_agent_plist
