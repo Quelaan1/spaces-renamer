@@ -107,6 +107,12 @@ display, centred in its menu bar. On macOS 27 the panel still shows over full-sc
 lacks `.fullScreenAuxiliary`, so the app hides a display's panel itself while that display's current
 Space is a full-screen app (#22).
 
+The panel's text colour follows the menu bar, not the system theme. On macOS 26/27 the menu bar's
+colour follows the wallpaper, so a Mac in light mode can have a black menu bar, and text drawn in the
+app's own appearance was black on black. The panel takes the appearance of the app's real
+`NSStatusBarWindow` and redraws when it changes (#25). That one window stands for every display, so
+two displays whose wallpapers give their menu bars different colours still share one text colour.
+
 **Switching desktops.** macOS has no public API to change the Space. The app posts the Darwin
 notification `com.alexbeals.spacesrenamer.switch-space` with the clicked desktop's `ManagedSpaceID`
 as its state, and the plugin, in the Spaces-bar host, does the switch:
