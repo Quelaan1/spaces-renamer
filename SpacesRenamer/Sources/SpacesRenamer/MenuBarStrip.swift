@@ -45,6 +45,7 @@ final class MenuBarStripController {
   private let settings: AppSettings
   private var panels: [CGDirectDisplayID: StripPanel] = [:]
   private var observer: (any NSObjectProtocol)?
+  private var appearanceObserver: NSKeyValueObservation?
   private var renderScheduled = false
 
   init(store: SpacesStore, settings: AppSettings) {
@@ -80,6 +81,7 @@ final class MenuBarStripController {
   }
 
   private func render() {
+    let appearance = menuBarAppearance()
     var shown = Set<CGDirectDisplayID>()
     for screen in NSScreen.screens where settings.showSpaceNameInMenuBar {
       guard let id = screen.displayID, let monitor = store.monitor(for: screen) else { continue }
@@ -90,11 +92,31 @@ final class MenuBarStripController {
       shown.insert(id)
       let panel = panels[id] ?? StripPanel()
       panels[id] = panel
-      panel.show(items: items, frame: stripFrame)
+      panel.show(items: items, frame: stripFrame, appearance: appearance)
     }
     for (id, panel) in panels where !shown.contains(id) {
       panel.hide()
     }
+  }
+
+  /// The appearance the menu bar is drawn in. On macOS 26/27 it follows the wallpaper, not the system
+  /// theme, so a light-mode Mac can have a dark menu bar. The strip borrows it from the app's own
+  /// status-item window and redraws when it changes (#25). Nil until that window exists.
+  // ponytail: one status-item window stands for every display; displays whose wallpapers give their
+  // menu bars different colours would need a per-display source.
+  private func menuBarAppearance() -> NSAppearance? {
+    let window = NSApp?.windows.first { String(describing: type(of: $0)) == "NSStatusBarWindow" && $0.frame.width > 0 }
+    guard let window else {
+      // Neither NSApp nor the status item exists yet while the app is starting; look again shortly.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.scheduleRender() }
+      return nil
+    }
+    if appearanceObserver == nil {
+      appearanceObserver = window.observe(\.effectiveAppearance) { [weak self] _, _ in
+        Task { @MainActor in self?.scheduleRender() }
+      }
+    }
+    return window.effectiveAppearance
   }
 
   /// The strip's frame, centred in the display's menu bar: to the right of the camera housing on a
@@ -137,7 +159,9 @@ private final class StripPanel {
     panel.contentView = hosting
   }
 
-  func show(items: [StripItem], frame: CGRect) {
+  func show(items: [StripItem], frame: CGRect, appearance: NSAppearance?) {
+    // The text colour comes from this, not from the app's light/dark setting (#25).
+    panel.appearance = appearance
     hosting.rootView = StripView(items: items) { item in
       DesktopSwitcher.switchTo(space: item.id)
     }
