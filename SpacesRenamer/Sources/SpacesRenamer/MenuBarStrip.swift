@@ -1,4 +1,5 @@
 import AppKit
+import CGSPrivate
 import SwiftUI
 import notify
 
@@ -102,10 +103,18 @@ final class MenuBarStripController {
     for screen in NSScreen.screens where settings.showSpaceNameInMenuBar {
       guard let id = screen.displayID, let monitor = store.monitor(for: screen) else { continue }
       // A full-screen app hides the menu bar, and the strip would otherwise stay over the app (#22).
-      if monitor.spaces.first(where: { $0.uuid == monitor.currentSpaceUUID })?.isFullscreenApp == true { continue }
+      let current = monitor.spaces.first { $0.uuid == monitor.currentSpaceUUID }
+      if current?.isFullscreenApp == true { continue }
       let items = store.stripItems(for: monitor)
       guard !items.isEmpty, let stripFrame = Self.stripFrame(on: screen, width: MenuBarStrip.width(of: items)) else { continue }
       shown.insert(id)
+      // Leaving a full-screen app leaves the panel on the desktop the display returns to and on no
+      // other, with no wake or display change to rebuild on. A panel that is not on the Space its
+      // display shows is replaced, whatever the cause; a new one joins every Space (#31).
+      if let current, let old = panels[id], !old.isOn(space: current.id) {
+        old.hide()
+        panels[id] = nil
+      }
       let panel = panels[id] ?? StripPanel()
       panels[id] = panel
       panel.show(items: items, frame: stripFrame, appearance: appearance)
@@ -183,6 +192,13 @@ private final class StripPanel {
     }
     panel.setFrame(frame, display: true)
     panel.orderFrontRegardless()
+  }
+
+  /// Whether the window server has the panel on the given Space (`ManagedSpaceID`). AppKit cannot
+  /// say: it still believes the panel is on every Space. True when the window server gives no answer.
+  func isOn(space id: Int) -> Bool {
+    let spaces = CGSCopySpacesForWindows(CGSMainConnectionID(), 7, [panel.windowNumber] as CFArray) as? [Int] ?? []
+    return spaces.isEmpty || spaces.contains(id)
   }
 
   func hide() {
