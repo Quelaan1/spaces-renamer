@@ -108,9 +108,9 @@ final class MenuBarStripController {
       let items = store.stripItems(for: monitor)
       guard !items.isEmpty, let stripFrame = Self.stripFrame(on: screen, width: MenuBarStrip.width(of: items)) else { continue }
       shown.insert(id)
-      // The window server can leave a panel on one Space without any wake or display change, so
-      // the panel would show on that desktop only. A panel that is not on the Space its display
-      // shows is replaced; a new one joins every Space (#31).
+      // Leaving a full-screen app leaves the panel on the desktop the display returns to and on no
+      // other, with no wake or display change to rebuild on. A panel that is not on the Space its
+      // display shows is replaced, whatever the cause; a new one joins every Space (#31).
       if let current, let old = panels[id], !old.isOn(space: current.id) {
         old.hide()
         panels[id] = nil

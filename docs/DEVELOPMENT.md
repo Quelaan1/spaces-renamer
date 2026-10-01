@@ -119,12 +119,14 @@ existing panel on one Space only, although its collection behaviour still says `
 `orderFrontRegardless()` does not move it to the current Space. Measured on macOS 27.0.1 with
 `SLSCopySpacesForWindows`: the panel was ordered in, listed on one Space, while another was active.
 
-The same loss happens without any wake or display change (#31), so on every render the app also asks
+The same loss happens without any wake or display change (#31): leaving a full-screen app leaves the
+panel on the desktop the display returns to, and on no other. So on every render the app also asks
 the window server whether each panel is on the Space its display shows (`CGSCopySpacesForWindows`)
 and replaces a panel that is not. AppKit cannot answer this: it still believes the panel is on every
-Space. The event that causes the loss is not known. Measured on macOS 27.0.1: another app's
-all-desktops window went from every Space to Space 1 only in an interval in which a full-screen Space
-was closed, with no lock, sleep or display change; a panel made new at that moment was on every Space.
+Space. The check does not depend on the event, so it also covers causes not yet seen. Measured on
+macOS 27.0.1: another app's all-desktops window went from every Space to one Space in an interval in
+which a full-screen Space was closed, with no lock, sleep or display change; a panel made new at that
+moment was on every Space.
 
 **Popover size.** The popover is a `MenuBarExtra` window. Its window grows when the content needs
 more room but does not shrink while the content's size is flexible; the unused part stays as a
