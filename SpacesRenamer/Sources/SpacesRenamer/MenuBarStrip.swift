@@ -44,19 +44,28 @@ final class MenuBarStripController {
   private let store: SpacesStore
   private let settings: AppSettings
   private var panels: [CGDirectDisplayID: StripPanel] = [:]
-  private var observer: (any NSObjectProtocol)?
+  private var observers: [any NSObjectProtocol] = []
   private var appearanceObserver: NSKeyValueObservation?
   private var renderScheduled = false
+  /// Set when the panels may no longer be on every Space; the next render replaces them (#27).
+  private var panelsStale = false
 
   init(store: SpacesStore, settings: AppSettings) {
     self.store = store
     self.settings = settings
-    // Displays added, removed or rearranged; the menu bar shown or hidden.
-    observer = NotificationCenter.default.addObserver(
-      forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated { self?.scheduleRender() }
+    // Displays added, removed or rearranged; the menu bar shown or hidden; the Mac woken. Sleep and
+    // wake re-enumerate external displays, and the window server then leaves an existing panel on
+    // one Space only although its collection behaviour still says every Space (#27).
+    let rebuild: @Sendable (Notification) -> Void = { [weak self] _ in
+      MainActor.assumeIsolated {
+        self?.panelsStale = true
+        self?.scheduleRender()
+      }
     }
+    observers.append(NotificationCenter.default.addObserver(
+      forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main, using: rebuild))
+    observers.append(NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: rebuild))
     track()
   }
 
@@ -81,6 +90,13 @@ final class MenuBarStripController {
   }
 
   private func render() {
+    if panelsStale {
+      // A new panel joins every Space; re-fronting an old one does not. Also drops the panels of
+      // display IDs that no longer exist.
+      panelsStale = false
+      panels.values.forEach { $0.hide() }
+      panels.removeAll()
+    }
     let appearance = menuBarAppearance()
     var shown = Set<CGDirectDisplayID>()
     for screen in NSScreen.screens where settings.showSpaceNameInMenuBar {
