@@ -119,6 +119,13 @@ existing panel on one Space only, although its collection behaviour still says `
 `orderFrontRegardless()` does not move it to the current Space. Measured on macOS 27.0.1 with
 `SLSCopySpacesForWindows`: the panel was ordered in, listed on one Space, while another was active.
 
+**Popover size.** The popover is a `MenuBarExtra` window. Its window grows when the content needs
+more room but does not shrink while the content's size is flexible; the unused part stays as a
+see-through outline around the content, visible over a light window (#28). Measured on macOS 27.0.1:
+window 856×437 after visiting Diagnostics, Spaces content 421 tall. So the content has one exact
+size per pane (`.fixedSize()`, a fixed Diagnostics width) and the scene uses
+`.windowResizability(.contentSize)`. Keep new popover content non-flexible.
+
 **Switching desktops.** macOS has no public API to change the Space. The app posts the Darwin
 notification `com.alexbeals.spacesrenamer.switch-space` with the clicked desktop's `ManagedSpaceID`
 as its state, and the plugin, in the Spaces-bar host, does the switch:
