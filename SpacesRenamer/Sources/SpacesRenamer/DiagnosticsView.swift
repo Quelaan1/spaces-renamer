@@ -55,7 +55,9 @@ struct DiagnosticsView: View {
         Button("Quit") { NSApp.terminate(nil) }
       }
     }
-    .frame(minWidth: 480, alignment: .leading)
+    // A fixed width, not a minimum: the popover takes its exact size from the content (#28), and
+    // without a width the long findings would never wrap.
+    .frame(width: 480, alignment: .leading)
     .onAppear {
       model.run()
       activation.refresh()

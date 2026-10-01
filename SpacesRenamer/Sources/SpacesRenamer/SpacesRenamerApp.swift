@@ -32,6 +32,8 @@ struct SpacesRenamerApp: App {
       MenuBarLabel()
     }
     .menuBarExtraStyle(.window)
+    // The window is exactly as large as the content, so it shrinks when the content does (#28).
+    .windowResizability(.contentSize)
   }
 
   static let statusIcon: NSImage = {
@@ -94,6 +96,9 @@ private struct PopoverContent: View {
       }
     }
     .padding()
+    // One exact size per pane. With a flexible size the window grows for the larger pane and never
+    // shrinks back, and the part left over shows as a see-through outline around the content (#28).
+    .fixedSize()
     .onExitCommand { dismiss() }
     .onAppear { activation.refresh() }
   }
