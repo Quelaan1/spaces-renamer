@@ -113,6 +113,12 @@ app's own appearance was black on black. The panel takes the appearance of the a
 `NSStatusBarWindow` and redraws when it changes (#25). That one window stands for every display, so
 two displays whose wallpapers give their menu bars different colours still share one text colour.
 
+The panels are thrown away and made again whenever the displays change or the Mac wakes (#27). Sleep
+and wake re-enumerate external displays under new display IDs, and the window server then keeps an
+existing panel on one Space only, although its collection behaviour still says `.canJoinAllSpaces`;
+`orderFrontRegardless()` does not move it to the current Space. Measured on macOS 27.0.1 with
+`SLSCopySpacesForWindows`: the panel was ordered in, listed on one Space, while another was active.
+
 **Switching desktops.** macOS has no public API to change the Space. The app posts the Darwin
 notification `com.alexbeals.spacesrenamer.switch-space` with the clicked desktop's `ManagedSpaceID`
 as its state, and the plugin, in the Spaces-bar host, does the switch:
