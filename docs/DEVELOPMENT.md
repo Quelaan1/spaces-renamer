@@ -100,29 +100,35 @@ per-Space `PreviewLabel` text layers, reads the display from the layer's `CACont
 it anchors on Dock's `SpacesListLayoutController` layer. Each bar is matched to its display by
 identity, so two displays with the same resolution keep their own names.
 
-**Menu-bar strip.** macOS mirrors a status item onto every display's menu bar at one shared width
-(one real `NSStatusBarWindow` plus `NSStatusItemReplicantView` copies), so a status item cannot show
-different names per display without leaving a gap. The app instead draws one borderless panel per
-display, centred in its menu bar. On macOS 27 the panel still shows over full-screen apps although it
-lacks `.fullScreenAuxiliary`, so the app hides a display's panel itself while that display's current
-Space is a full-screen app (#22).
+**Menu-bar trigger and tray.** macOS mirrors a status item onto every display's menu bar at one
+shared width (one real `NSStatusBarWindow` plus `NSStatusItemReplicantView` copies), so a status item
+cannot show different names per display without leaving a gap. The app instead draws one borderless
+trigger panel per display, showing that display's current desktop name with a disclosure chevron.
+A horizontal row of every name had no way to know where the menu-bar extras begin — no public API
+gives that boundary — so on a narrow display the names ran under the clock and third-party items
+(#33). A single current name sits just right of the notch (centred on a display without one), clear
+of the extras; hovering or clicking the trigger drops a vertical tray of that display's desktops,
+which grows downward and holds any number. The tray is a `.menu`-material panel shown on demand and
+ordered out when the pointer leaves both it and the trigger. On macOS 27 the trigger still shows over
+full-screen apps although it lacks `.fullScreenAuxiliary`, so the app hides a display's trigger
+itself while that display's current Space is a full-screen app (#22).
 
-The panel's text colour follows the menu bar, not the system theme. On macOS 26/27 the menu bar's
+The trigger's text colour follows the menu bar, not the system theme. On macOS 26/27 the menu bar's
 colour follows the wallpaper, so a Mac in light mode can have a black menu bar, and text drawn in the
-app's own appearance was black on black. The panel takes the appearance of the app's real
+app's own appearance was black on black. The trigger takes the appearance of the app's real
 `NSStatusBarWindow` and redraws when it changes (#25). That one window stands for every display, so
 two displays whose wallpapers give their menu bars different colours still share one text colour.
 
-The panels are thrown away and made again whenever the displays change or the Mac wakes (#27). Sleep
+The triggers are thrown away and made again whenever the displays change or the Mac wakes (#27). Sleep
 and wake re-enumerate external displays under new display IDs, and the window server then keeps an
-existing panel on one Space only, although its collection behaviour still says `.canJoinAllSpaces`;
+existing trigger on one Space only, although its collection behaviour still says `.canJoinAllSpaces`;
 `orderFrontRegardless()` does not move it to the current Space. Measured on macOS 27.0.1 with
 `SLSCopySpacesForWindows`: the panel was ordered in, listed on one Space, while another was active.
 
 The same loss happens without any wake or display change (#31): leaving a full-screen app leaves the
-panel on the desktop the display returns to, and on no other. So on every render the app also asks
-the window server whether each panel is on the Space its display shows (`CGSCopySpacesForWindows`)
-and replaces a panel that is not. AppKit cannot answer this: it still believes the panel is on every
+trigger on the desktop the display returns to, and on no other. So on every render the app also asks
+the window server whether each trigger is on the Space its display shows (`CGSCopySpacesForWindows`)
+and replaces a trigger that is not. AppKit cannot answer this: it still believes the panel is on every
 Space. The check does not depend on the event, so it also covers causes not yet seen. Measured on
 macOS 27.0.1: another app's all-desktops window went from every Space to one Space in an interval in
 which a full-screen Space was closed, with no lock, sleep or display change; a panel made new at that
