@@ -10,8 +10,8 @@ for **macOS 26 and 27 on Apple Silicon**.
 </p>
 
 - **Names in Mission Control**, on every display.
-- **Names in the menu bar**: each display shows its own named desktops, with the current one
-  highlighted. Click a name to switch to that desktop.
+- **Names in the menu bar**: each display shows its current desktop's name by the notch. Hover it
+  for a drop-down of that display's desktops, and click one to switch.
 - **A glass HUD** that shows the desktop's name when you switch.
 
 ## Requirements
@@ -52,11 +52,12 @@ and survives reboots without a login item, see [MIP in the developer notes](docs
 1. Click the menu-bar icon. Each display has a row of its desktops.
 2. Type a name and press Return. Clear a name to go back to "Desktop N".
 3. Open Mission Control: your names are there. Full-screen apps keep their own names.
-4. Look at the menu bar: each display shows its own named desktops in the middle. Click one to go
-   there. No shortcut setup or permission is needed, and it works for desktops 1–16.
+4. Look at the menu bar: each display shows its current desktop's name by the notch. Hover it for
+   the list and click a desktop to go there. No shortcut setup or permission is needed, and it works
+   for desktops 1–16.
 
-The names can cover an app's menus when those reach the middle of the menu bar. Turn the menu-bar
-names or the HUD off in the popover.
+On a Mac without a notch the name sits in the middle of the menu bar. Turn the menu-bar name or the
+HUD off in the popover.
 
 ## Uninstall
 
